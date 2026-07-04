@@ -159,7 +159,9 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.result == 'synced'
     runs-on: @RUNS_ON@
-    timeout-minutes: 90
+    # Safety valve: reap a runaway build before it can thrash a self-hosted host
+    # into a freeze. A cold macOS app build fits comfortably under this.
+    timeout-minutes: 40
     # This job runs untrusted upstream BUILD/SMOKE; it must hold no token.
     # download-artifact authenticates with ACTIONS_RUNTIME_TOKEN, not
     # GITHUB_TOKEN, so an empty permission set is sufficient.

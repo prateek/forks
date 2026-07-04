@@ -26,7 +26,7 @@ track = [141, 143]
 # sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [build]
-command = "cp GhostPepper/Secrets.example GhostPepper/Secrets.swift; command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO build"
+command = "cp GhostPepper/Secrets.example GhostPepper/Secrets.swift; command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; nice -n 10 xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation -jobs 4 CODE_SIGNING_ALLOWED=NO build"
 output = "build/derived/Build/Products/Release/GhostPepper.app"
 smoke = "test -d build/derived/Build/Products/Release/GhostPepper.app"
 
