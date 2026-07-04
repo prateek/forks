@@ -150,8 +150,8 @@ CI never talks to 1Password. Two apps, one vault, three GitHub secrets.
   in the mini's keychain; no workflow references them. `prateek/forks` must be in
   its installation so the minis can register as runners.
 - **Vault `gh-prateek-fork-automation`** (name stays colon-free; `:` breaks
-  `op://` refs): item `github-app` (`app-id`, `private-key`) and item `claude`
-  (`oauth-token`, from `claude setup-token`).
+  `op://` refs): item `prateek-fork-automation` (`app-id`, `private-key`) and
+  item `claude` (`oauth-token`, from `claude setup-token`).
 - **Three GitHub secrets on `prateek/forks`**, referenced one-job-each:
   `CLAUDE_CODE_OAUTH_TOKEN` (resolve), `FORK_APP_ID` + `FORK_APP_PRIVATE_KEY`
   (publish). They are **repo-level** — every per-tool workflow shares them — so
