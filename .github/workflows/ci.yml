@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: engine tests
+        run: mise run test
+      # prek runs gofmt, go vet, actionlint, shellcheck, ruff, and the
+      # whitespace hooks over the whole tree; all tools come from mise.
+      - name: lint
+        run: mise run lint

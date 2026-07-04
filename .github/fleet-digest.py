@@ -6,6 +6,7 @@ Runs from the fleet-digest workflow. Reads per-fork state from the GitHub API
 sync commit bodies, rewrites the fenced fleet-status block in README.md, and
 commits it. Best-effort: any field it can't resolve renders as an em dash.
 """
+
 import json
 import os
 import re
@@ -44,25 +45,38 @@ def forks():
 
 def last_run(tool):
     return gh_json(
-        "api", f"repos/{REPO}/actions/workflows/{tool}.yml/runs",
-        "--jq", ".workflow_runs[0] // empty | {conclusion, status, html_url, created_at}",
+        "api",
+        f"repos/{REPO}/actions/workflows/{tool}.yml/runs",
+        "--jq",
+        ".workflow_runs[0] // empty | {conclusion, status, html_url, created_at}",
         default=None,
     )
 
 
 def latest_release(tool):
     return gh_json(
-        "api", f"repos/{REPO}/releases",
-        "--jq", f'[.[] | select(.tag_name | startswith("{tool}-v"))][0] // empty '
-                "| {tag_name, html_url}",
+        "api",
+        f"repos/{REPO}/releases",
+        "--jq",
+        f'[.[] | select(.tag_name | startswith("{tool}-v"))][0] // empty | {{tag_name, html_url}}',
         default=None,
     )
 
 
 def open_issues():
     return gh_json(
-        "issue", "list", "--repo", REPO, "--state", "open", "--author", BOT,
-        "--limit", "200", "--json", "number,title,url",
+        "issue",
+        "list",
+        "--repo",
+        REPO,
+        "--state",
+        "open",
+        "--author",
+        BOT,
+        "--limit",
+        "200",
+        "--json",
+        "number,title,url",
         default=[],
     )
 
@@ -70,7 +84,8 @@ def open_issues():
 def last_spend(tool):
     body = subprocess.run(
         ["git", "log", "-1", "--format=%B", "--", f"{tool}/.fork/lock.json"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     ).stdout
     hits = SPEND.findall(body)
     return f"${hits[-1]}" if hits else "—"

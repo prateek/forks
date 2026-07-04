@@ -13,3 +13,6 @@
 # python bytecode
 __pycache__/
 *.pyc
+
+# per-worktree mise experiments
+mise.local.toml

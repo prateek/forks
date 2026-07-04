@@ -1,0 +1,52 @@
+# Run with prek (pinned in mise.toml). Local hooks call the mise-provided
+# binaries so tool versions have a single source of truth. CI runs the same set
+# via `mise run lint`. Install the git hook once with `mise run hooks`.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # patches and recorded rerere resolutions are whitespace-significant.
+        exclude: '(\.patch$|/rerere/)'
+      - id: end-of-file-fixer
+        exclude: '(\.patch$|/rerere/)'
+      - id: check-merge-conflict
+      - id: check-yaml
+        # templates/fork.yml carries @VAR@ placeholders that aren't valid YAML
+        # until rendered.
+        exclude: '^templates/'
+
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -l -w
+        language: system
+        types: [go]
+      - id: go-vet
+        name: go vet
+        entry: bash -c 'cd engine && go vet ./...'
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: ruff
+        name: ruff
+        entry: ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff-format
+        entry: ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: actionlint
+        name: actionlint
+        entry: actionlint -ignore 'label ".*" is unknown'
+        language: system
+        pass_filenames: false
+        files: '^\.github/workflows/.*\.ya?ml$'
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck -x
+        language: system
+        types: [shell]

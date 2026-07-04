@@ -21,9 +21,9 @@ const (
 )
 
 type RunState struct {
-	Version        int               `json:"version"`
-	Status         Phase             `json:"status"`
-	SHA            string            `json:"sha"`
+	Version         int               `json:"version"`
+	Status          Phase             `json:"status"`
+	SHA             string            `json:"sha"`
 	PRHeads         map[string]string `json:"pr_heads"`
 	PRQueue         []int             `json:"pr_queue"`
 	BranchHeads     map[string]string `json:"branch_heads,omitempty"`

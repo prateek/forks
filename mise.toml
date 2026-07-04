@@ -1,0 +1,30 @@
+# Pinned toolchain for the fleet monorepo. `mise install` gives every dev and CI
+# run the same go/python/lint versions. xcodegen is deliberately absent: the
+# macOS build job carries no repo checkout (it untars the assembled tree), so it
+# installs xcodegen at build time via brew — see AGENTS.md "Local development".
+[tools]
+go = "1.26.4"        # keep in step with engine/go.mod
+python = "3.14"
+
+actionlint = "1.7.12"
+prek = "0.4.6"
+ruff = "0.15.20"
+shellcheck = "0.11.0"
+
+[settings]
+# Once `mise install` has run on both linux and macos, commit the resulting
+# mise.lock for checksum-pinned installs. Exact version pins above are the
+# reproducibility floor until then.
+lockfile = true
+
+[tasks.test]
+description = "run the engine test suite"
+run = "go -C engine test ./..."
+
+[tasks.lint]
+description = "run every pre-commit hook over the whole tree"
+run = "prek run --all-files --show-diff-on-failure"
+
+[tasks.hooks]
+description = "install prek git hooks in this checkout"
+run = "prek install"
