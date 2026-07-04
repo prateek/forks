@@ -154,20 +154,24 @@ CI never talks to 1Password. Two apps, one vault, three GitHub secrets.
   (`oauth-token`, from `claude setup-token`).
 - **Three GitHub secrets on `prateek/forks`**, referenced one-job-each:
   `CLAUDE_CODE_OAUTH_TOKEN` (resolve), `FORK_APP_ID` + `FORK_APP_PRIVATE_KEY`
-  (publish).
+  (publish). They are **repo-level** — every per-tool workflow shares them — so
+  **adding a fork needs no new secret**, only the app-install click above.
 
-Set or rotate a secret — edit the 1P item, then pipe it straight in (never echo
-the value):
+Seeding and rotation both run one command, `scripts/sync-fork-secrets`. It reads
+the three items with a 1Password **service account scoped read-only to the
+`gh-prateek-fork-automation` vault**, and `gh secret set`s them; nothing is ever
+printed. To rotate, edit the 1P item and re-run it.
 
 ```sh
-[ "$(op read 'op://gh-prateek-fork-automation/claude/oauth-token' | wc -c)" -gt 1 ]
-op read 'op://gh-prateek-fork-automation/claude/oauth-token' \
-  | gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo prateek/forks
-op read 'op://gh-prateek-fork-automation/github-app/app-id' \
-  | gh secret set FORK_APP_ID --repo prateek/forks
-op read 'op://gh-prateek-fork-automation/github-app/private-key' \
-  | gh secret set FORK_APP_PRIVATE_KEY --repo prateek/forks
+# one-time: store the service-account token in the login keychain
+security add-generic-password -a "$USER" -s op-fork-automation-sa -w
+# seed or rotate (also accepts OP_SERVICE_ACCOUNT_TOKEN in the env instead)
+scripts/sync-fork-secrets              # defaults to prateek/forks
 ```
+
+The service-account token lives only in the keychain (or an env var) — never in
+1Password itself (you can't fetch the unlock key from the thing it unlocks) and
+never in CI.
 
 ## Developing the engine and templates
 
