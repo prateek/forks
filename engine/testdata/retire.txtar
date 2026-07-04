@@ -1,0 +1,16 @@
+# When the last tracked PR merges upstream and no patch files remain, the
+# fork retires.
+
+upstream up
+upstream:pr up 1 feature.txt 'feat'
+fork fork up 1
+
+exec assemble --repo fork
+stdout 'result=synced'
+
+upstream:absorb-pr up 1
+exec assemble --repo fork
+stdout 'result=retire'
+
+-- up/base.txt --
+base

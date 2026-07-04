@@ -1,0 +1,36 @@
+# Stray files left in the reused workspace (build artifacts) never fold into
+# an assembled tree, even on the rerere auto-resolve path, which stages
+# only the conflicted files.
+
+upstream up
+upstream:pr up 1 feature.txt 'feat'
+fork fork up 1
+mkpatch up fork 0002-charlie.patch core.txt 'charlie-forked'
+upstream:commit up core.txt 'charlie-upstream'
+
+exec assemble --repo fork
+stdout 'result=conflict'
+cp resolved.txt fork/.fork/work/core.txt
+exec git -C fork/.fork/work add core.txt
+exec assemble --repo fork --resume
+stdout 'result=synced'
+
+# A later build leaves junk in the workspace; the next sync must neither
+# ship it nor keep it.
+cp junk.bin fork/.fork/work/dist-artifact.bin
+upstream:commit up README.md 'churn'
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'auto-resolved from rerere cache'
+! exists fork/.fork/work/dist-artifact.bin
+exec git -C fork/.fork/work ls-tree -r --name-only HEAD
+! stdout 'dist-artifact'
+
+-- up/core.txt --
+charlie-base
+-- up/README.md --
+readme
+-- resolved.txt --
+charlie-merged
+-- junk.bin --
+not a real artifact

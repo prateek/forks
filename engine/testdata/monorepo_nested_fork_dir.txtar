@@ -1,0 +1,37 @@
+# The fork lives as a subdirectory of an outer monorepo git repo, with a
+# `src` gitlink already recorded (the submodule pointer CI maintains). The
+# engine assembles against `--repo mono/tool` without ever touching the outer
+# repo: it clones upstream into mono/tool/.fork/work and operates only there.
+
+upstream up
+upstream:pr up 1 feature.txt 'feat'
+
+# Build the outer monorepo containing the fork dir plus a src gitlink.
+fork mono/tool up 1
+exec git init -q -b main mono
+exec git -C mono config user.name Fleet
+exec git -C mono config user.email fleet@example.invalid
+exec git -C mono update-index --add --cacheinfo 160000,0000000000000000000000000000000000000001,tool/src
+exec git -C mono add tool/.fork tool/patches
+exec git -C mono commit -qm 'fleet: add tool'
+exec git -C mono rev-parse HEAD
+cp stdout mono-head-before
+
+exec assemble --repo mono/tool
+stdout 'result=synced'
+grep 'feat' mono/tool/.fork/work/feature.txt
+
+# The outer monorepo HEAD did not move: the engine committed only inside the
+# nested workspace, never against the monorepo.
+exec git -C mono rev-parse HEAD
+cmp stdout mono-head-before
+
+# The gitlink is intact and untouched by the engine.
+exec git -C mono ls-files -s tool/src
+stdout '160000 0000000000000000000000000000000000000001 0	tool/src'
+
+# The manifest inside the nested fork dir was pinned to upstream HEAD as usual.
+check:pinned mono/tool up
+
+-- up/feature.txt --
+placeholder

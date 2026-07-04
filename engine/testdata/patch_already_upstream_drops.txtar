@@ -1,0 +1,23 @@
+# A local patch whose change lands in upstream itself is dropped: the file
+# is deleted and the manifest note says why.
+
+upstream up
+upstream:pr up 1 feature.txt 'feat'
+fork fork up 1
+mkpatch up fork 0001-local.patch local.txt 'payload'
+
+exec assemble --repo fork
+stdout 'result=synced'
+exists fork/patches/0001-local.patch
+
+upstream:commit up local.txt 'payload'
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'already upstream; dropping'
+! exists fork/patches/0001-local.patch
+
+exec assemble --repo fork
+stdout 'result=no_op'
+
+-- up/base.txt --
+base

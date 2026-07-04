@@ -1,0 +1,35 @@
+# The world changes underneath a paused assembly: every hostile transition
+# is refused with a recovery path, and --abort restores a clean start.
+
+upstream up
+fork fork up 1
+upstream:pr up 1 core.txt 'two-pr'
+upstream:commit up core.txt 'two-upstream'
+
+exec assemble --repo fork
+stdout 'result=conflict'
+
+! exec assemble --repo fork
+stderr 'already in flight'
+
+! exec assemble --repo fork --resume
+stderr 'unresolved conflicts'
+
+# A resolver that aborted the merge is detected.
+exec git -C fork/.fork/work merge --abort
+! exec assemble --repo fork --resume
+stderr 'no longer in progress'
+
+exec assemble --repo fork --abort
+exec assemble --repo fork
+stdout 'result=conflict'
+cp resolved.txt fork/.fork/work/core.txt
+exec git -C fork/.fork/work add core.txt
+exec assemble --repo fork --resume
+stdout 'result=synced'
+grep 'two-merged' fork/.fork/work/core.txt
+
+-- up/core.txt --
+two-base
+-- resolved.txt --
+two-merged

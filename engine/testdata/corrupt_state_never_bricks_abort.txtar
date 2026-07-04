@@ -1,0 +1,22 @@
+# A corrupt state file cannot brick recovery.
+
+upstream up
+fork fork up 1
+upstream:pr up 1 core.txt 'pr-side'
+upstream:commit up core.txt 'upstream-side'
+
+exec assemble --repo fork
+stdout 'result=conflict'
+
+cp garbage.json fork/.fork/work/.git/fork-assemble-state.json
+! exec assemble --repo fork --resume
+stderr '--abort'
+
+exec assemble --repo fork --abort
+exec assemble --repo fork
+stdout 'result=conflict'
+
+-- up/core.txt --
+base
+-- garbage.json --
+{"version": 1, "status": "awaiting_

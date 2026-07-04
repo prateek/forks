@@ -1,0 +1,14 @@
+# A patch git cannot even start applying is a loud failure carrying git's
+# own explanation, never a silent result or bogus conflict pause.
+
+upstream up
+upstream:pr up 1 feature.txt 'feat'
+fork fork up 1
+
+! exec assemble --repo fork
+stderr 'failed without resolvable conflicts'
+
+-- up/base.txt --
+base
+-- fork/patches/0001-garbage.patch --
+this is not a patch at all

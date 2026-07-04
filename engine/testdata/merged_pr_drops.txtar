@@ -1,0 +1,23 @@
+# A PR that upstream merges drops out of the track list; its content keeps
+# arriving via upstream itself.
+
+upstream up
+upstream:pr up 1 app.txt 'alpha pr-one'
+upstream:pr up 2 feature.txt 'pr-two feature'
+fork fork up 1,2
+
+exec assemble --repo fork
+stdout 'result=synced'
+
+upstream:absorb-pr up 1
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'dropped merged/closed PRs: #1'
+grep 'track = \[2\]' fork/.fork/fork.toml
+grep 'alpha pr-one' fork/.fork/work/app.txt
+
+exec assemble --repo fork
+stdout 'result=no_op'
+
+-- up/app.txt --
+alpha

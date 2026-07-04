@@ -1,0 +1,14 @@
+# A remote patch whose downloaded bytes do not match the pinned sha256 is a
+# hard failure. Nothing is applied and no release is produced.
+
+upstream up
+fork fork up none
+mkremotepatch up remote/tamper.patch evil.txt 'evil-body'
+fork:remote fork remote/tamper.patch bad
+
+! exec assemble --repo fork
+stderr 'sha256 mismatch'
+! exists fork/.fork/work/evil.txt
+
+-- up/core.txt --
+base

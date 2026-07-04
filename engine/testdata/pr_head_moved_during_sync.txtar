@@ -1,0 +1,13 @@
+# If a PR force-pushes between forge lookup and fetch, the engine refuses to
+# record a lock for the wrong head.
+
+upstream up
+upstream:pr up 1 app.txt 'one'
+fork fork up 1
+upstream:move-pr up 1 app.txt 'two'
+
+! exec assemble --repo fork
+stderr 'PR #1 moved during sync'
+
+-- up/app.txt --
+base

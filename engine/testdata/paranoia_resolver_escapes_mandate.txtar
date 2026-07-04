@@ -1,0 +1,47 @@
+# A hijacked resolver session tries to escape its mandate during a pause:
+# it plants a config-based code-execution hook and edits a file outside the
+# conflicted set. The engine's resume contract reverts both before trusting
+# the workspace, and the sync still completes from the legitimate resolution.
+
+upstream up
+fork fork up 1
+upstream:pr up 1 core.txt 'two-pr'
+upstream:commit up core.txt 'two-upstream'
+
+# Also carry an unrelated tracked file so we can prove out-of-set reverts.
+upstream:commit up bystander.txt 'bystander-original'
+
+exec assemble --repo fork
+stdout 'result=conflict'
+grep '<<<<<<<' fork/.fork/work/core.txt
+
+# The resolver does its real job on the conflicted file...
+cp resolved.txt fork/.fork/work/core.txt
+exec git -C fork/.fork/work add core.txt
+
+# ...then oversteps: a config hook for later code execution, and an edit to
+# a file that was never in conflict.
+exec git -C fork/.fork/work config core.hooksPath .git/evil-hooks
+cp tampered.txt fork/.fork/work/bystander.txt
+exec git -C fork/.fork/work add bystander.txt
+
+exec assemble --repo fork --resume
+stdout 'result=synced'
+stdout 'reverted resolver change outside the conflicted set: bystander.txt'
+
+# The legitimate resolution shipped.
+grep 'two-merged' fork/.fork/work/core.txt
+# The out-of-set edit was reverted to its assembled state.
+grep 'bystander-original' fork/.fork/work/bystander.txt
+! grep 'tampered' fork/.fork/work/bystander.txt
+# The planted config key is gone (--get exits nonzero when the key is absent).
+! exec git -C fork/.fork/work config --get core.hooksPath
+
+-- up/core.txt --
+two-base
+-- up/bystander.txt --
+bystander-original
+-- resolved.txt --
+two-merged
+-- tampered.txt --
+tampered

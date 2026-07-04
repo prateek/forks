@@ -1,0 +1,17 @@
+# A live concurrent invocation is refused by the process lock; a stale lock
+# left by a dead process is replaced silently.
+
+upstream up
+upstream:pr up 1 feature.txt 'feat'
+fork fork up 1
+
+lock:held-by-live-pid fork
+! exec assemble --repo fork
+stderr 'another assemble \(pid'
+
+lock:held-by-dead-pid fork
+exec assemble --repo fork
+stdout 'result=synced'
+
+-- up/base.txt --
+base

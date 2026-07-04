@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+#
+# harness - local Forgejo sandbox for the downstream-fork engine.
+#
+# A real forge running locally: repos, PRs (refs/pull/N/head), branches, and
+# releases, so the sync engine can be exercised against a real Gitea-shaped
+# forge without touching GitHub.
+#
+# Scope: this harness verifies the ENGINE against a live forge (PR resolution
+# via the Gitea REST client, branch fetch/merge, monorepo-nested fork dirs,
+# the conflict pause/resume path). The three-job fork.yml workflow is a
+# multi-runner GitHub property (untrusted build isolated from credentialed
+# publish, cross-job artifacts, app-token mint) that a single-host forge
+# cannot faithfully replicate, so full CI verification lives in the
+# real-GitHub E2E (docs/plans downstream-fork Phase: provision + migrate).
+#
+# Subcommands:
+#   up             docker compose up + wait for the API
+#   bootstrap      admin user + API token
+#   seed           monorepo layout: upstream `up` (two PRs), fork `up-fork`
+#                  (an internal branch), and a mono/ checkout with the shared
+#                  engine and a nested testbed fork dir
+#   engine         run the sync engine against mono/testbed on the live forge
+#   seed-conflict  stage a patch/upstream collision for the engine conflict path
+#   down           stop the forge (data kept)
+#   clean          stop and delete all state
+#
+# State lives under .data/ (forge) and .cache/ (tokens, tools, checkouts);
+# both are gitignored and safe to delete.
+#
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+engine_dir="$here/../../engine"
+forge_url="http://localhost:3993"
+admin_user="prungta"
+admin_pass="fork-harness-pw1"
+cache="$here/.cache"
+token_file="$cache/api-token"
+
+log() { printf 'harness: %s\n' "$*"; }
+die() { printf 'harness: %s\n' "$*" >&2; exit 1; }
+
+api() {
+  local method="$1" path="$2"
+  shift 2
+  curl -sS -X "$method" \
+    -H "Authorization: token $(cat "$token_file")" \
+    -H "Content-Type: application/json" \
+    "$forge_url/api/v1$path" "$@"
+}
+
+wait_for_api() {
+  for _ in $(seq 1 60); do
+    if curl -fsS "$forge_url/api/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  die "forge did not become healthy at $forge_url"
+}
+
+cmd_up() {
+  mkdir -p "$here/.data" "$cache"
+  (cd "$here" && docker compose up -d)
+  wait_for_api
+  log "forge up at $forge_url"
+}
+
+cmd_bootstrap() {
+  if ! docker exec -u 1000 fork-harness-forgejo forgejo admin user list | grep -q "$admin_user"; then
+    docker exec -u 1000 fork-harness-forgejo forgejo admin user create \
+      --admin --username "$admin_user" --password "$admin_pass" \
+      --email "$admin_user@harness.invalid" --must-change-password=false
+    log "created admin user $admin_user"
+  fi
+  if [[ ! -s "$token_file" ]]; then
+    docker exec -u 1000 fork-harness-forgejo forgejo admin user generate-access-token \
+      --username "$admin_user" --token-name "harness-$(date +%s)" --scopes all --raw \
+      | tr -d '[:space:]' >"$token_file"
+    log "api token stored in $token_file"
+  fi
+  api GET /user >/dev/null || die "token does not authenticate"
+  log "bootstrap ok ($(api GET /user | python3 -c 'import json,sys; print(json.load(sys.stdin)["login"])'))"
+}
+
+push_repo() { # push_repo <dir> <remote-url>
+  git -C "$1" -c credential.helper= \
+    -c "http.extraHeader=Authorization: token $(cat "$token_file")" \
+    push -q "$2" "$3"
+}
+
+cmd_seed() {
+  local up_dir="$cache/seed-up" forkrepo_dir="$cache/up-fork" mono="$cache/mono"
+  rm -rf "$up_dir" "$forkrepo_dir" "$mono"
+
+  # --- upstream `up` with two real PRs -------------------------------------
+  api DELETE "/repos/$admin_user/up" >/dev/null 2>&1 || true
+  api POST /user/repos -d '{"name": "up", "default_branch": "main", "auto_init": false}' >/dev/null
+  git init -q -b main "$up_dir"
+  (
+    cd "$up_dir"
+    printf '#!/bin/sh\necho "testbed 0.0.1"\n' > testbed.sh
+    chmod +x testbed.sh
+    printf 'alpha\nbravo\ncharlie\n' > core.txt
+    printf 'build:\n\ttrue\nsmoke:\n\t./testbed.sh\n' > Makefile
+    git add -A && git commit -qm "base"
+    git remote add origin "$forge_url/$admin_user/up.git"
+  )
+  push_repo "$up_dir" origin main
+  (
+    cd "$up_dir"
+    git checkout -qb pr-quiet main
+    printf 'alpha\nbravo-quiet\ncharlie\n' > core.txt
+    git commit -qam "add quiet mode"
+  )
+  push_repo "$up_dir" origin pr-quiet
+  (
+    cd "$up_dir"
+    git checkout -qb pr-feature main
+    printf 'feature payload\n' > feature.txt
+    git add feature.txt && git commit -qm "add feature"
+  )
+  push_repo "$up_dir" origin pr-feature
+  git -C "$up_dir" checkout -q main
+  api POST "/repos/$admin_user/up/pulls" \
+    -d '{"title": "add quiet mode", "head": "pr-quiet", "base": "main"}' >/dev/null
+  api POST "/repos/$admin_user/up/pulls" \
+    -d '{"title": "add feature", "head": "pr-feature", "base": "main"}' >/dev/null
+  log "upstream up: PRs #1 and #2"
+
+  # --- fork `up-fork` carrying one internal branch -------------------------
+  api DELETE "/repos/$admin_user/up-fork" >/dev/null 2>&1 || true
+  api POST /user/repos -d '{"name": "up-fork", "default_branch": "main", "auto_init": false}' >/dev/null
+  git clone -q "$forge_url/$admin_user/up.git" "$forkrepo_dir"
+  (
+    cd "$forkrepo_dir"
+    git remote add fork "$forge_url/$admin_user/up-fork.git"
+    git checkout -qb feat-internal main
+    printf 'internal tweak\n' > internal.txt
+    git add internal.txt && git commit -qm "internal: wip not yet a PR"
+    git checkout -q main
+  )
+  push_repo "$forkrepo_dir" fork main
+  push_repo "$forkrepo_dir" fork feat-internal
+  log "fork up-fork: branch feat-internal"
+
+  # --- monorepo checkout: shared engine + nested testbed fork dir ----------
+  mkdir -p "$mono/engine" "$mono/testbed/.fork" "$mono/testbed/patches"
+  cp "$engine_dir"/*.go "$engine_dir/go.mod" "$engine_dir/go.sum" "$mono/engine/"
+  rm -f "$mono/engine/"*_test.go
+  cat >"$mono/testbed/.fork/fork.toml" <<EOF
+[upstream]
+repo = "$admin_user/up"
+url = "$forge_url/$admin_user/up.git"
+branch = "main"
+sha = ""
+
+[prs]
+track = [1, 2]
+
+[branches]
+url = "$forge_url/$admin_user/up-fork.git"
+track = ["feat-internal"]
+
+[build]
+command = "make build"
+output = "testbed.sh"
+smoke = "make smoke"
+
+[release]
+kind = "formula"
+tool = "testbed"
+
+[tap]
+repo = "$admin_user/forks"
+EOF
+  git init -q -b main "$mono"
+  git -C "$mono" -c user.name=harness -c user.email=harness@invalid add -A >/dev/null
+  git -C "$mono" -c user.name=harness -c user.email=harness@invalid commit -qm "fleet monorepo" >/dev/null
+  log "monorepo seeded at $mono (testbed tracks PRs #1,#2 + branch feat-internal)"
+}
+
+# Runs the engine directly against the live forge, on the nested testbed fork
+# dir inside the monorepo. No FORGE_CLI: a non-github.com upstream URL selects
+# the Gitea-shaped REST client, with FORGE_TOKEN for auth.
+cmd_engine() {
+  local mono="$cache/mono"
+  [[ -d "$mono/testbed" ]] || die "run '$0 seed' first"
+  mkdir -p "$cache/bin"
+  (
+    cd "$engine_dir"
+    go build -o "$cache/bin/assemble" .
+  )
+  FORGE_TOKEN="$(cat "$token_file")" "$cache/bin/assemble" --repo "$mono/testbed" "$@"
+}
+
+# Stages a patch/upstream collision in the monorepo so the next engine run
+# exercises the conflict pause path (resolve by hand, then --resume).
+cmd_seed_conflict() {
+  local mono="$cache/mono" up_dir="$cache/seed-up" scratch="$cache/conflict-scratch"
+  [[ -d "$mono/testbed" ]] || die "run '$0 seed' first"
+  rm -rf "$scratch"
+
+  # A local patch that forks core.txt's charlie line.
+  git clone -q "$forge_url/$admin_user/up.git" "$scratch"
+  (
+    cd "$scratch"
+    printf 'alpha\nbravo\ncharlie-forked\n' > core.txt
+    git -c user.name=harness -c user.email=harness@invalid commit -qam "local: fork charlie"
+    git format-patch -q -1 -o "$cache"
+  )
+  mkdir -p "$mono/testbed/patches"
+  mv "$cache"/0001-local-fork-charlie.patch "$mono/testbed/patches/0001-fork-charlie.patch"
+  rm -rf "$scratch"
+
+  # Upstream moves the same line, so applying the patch conflicts.
+  (
+    cd "$up_dir"
+    git checkout -q main
+    printf 'alpha\nbravo\ncharlie-upstream\n' > core.txt
+    git -c user.name=harness -c user.email=harness@invalid commit -qam "upstream: change charlie"
+  )
+  push_repo "$up_dir" origin main
+  log "conflict staged: local patch forks charlie, upstream moved charlie"
+}
+
+cmd_down() { (cd "$here" && docker compose down); }
+
+cmd_clean() {
+  (cd "$here" && docker compose down -v) || true
+  rm -rf "$here/.data" "$cache"
+  log "harness state removed"
+}
+
+case "${1:-}" in
+  up) cmd_up ;;
+  bootstrap) cmd_bootstrap ;;
+  seed) cmd_seed ;;
+  engine) shift; cmd_engine "$@" ;;
+  seed-conflict) cmd_seed_conflict ;;
+  down) cmd_down ;;
+  clean) cmd_clean ;;
+  *) sed -n '2,23p' "$0" >&2; exit 2 ;;
+esac

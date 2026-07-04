@@ -1,0 +1,29 @@
+# A [branches] entry merges an internal fork branch into the assembly like a
+# PR head. When upstream later absorbs the same change, the branch is dropped
+# from the track list automatically.
+
+upstream up
+fork fork up none
+forkrepo:branch up feat-widget widget.txt 'widget-body'
+fork:branches fork up feat-widget
+
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'branches merged: feat-widget'
+grep 'widget-body' fork/.fork/work/widget.txt
+grep 'feat-widget' fork/.fork/fork.toml
+
+# Rerun with nothing changed: the branch head is a drift input, so no-op.
+exec assemble --repo fork
+stdout 'result=no_op'
+
+# Upstream absorbs the identical content; the branch is now redundant and is
+# dropped from [branches] track, and the fork retires (nothing left to carry).
+upstream:commit up widget.txt 'widget-body'
+exec assemble --repo fork
+stdout 'branch feat-widget is already upstream; dropping'
+stdout 'result=retire'
+! grep 'feat-widget' fork/.fork/fork.toml
+
+-- up/core.txt --
+base

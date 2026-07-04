@@ -1,0 +1,13 @@
+# An arbitrary existing git checkout is never scrubbed as an assembly
+# workspace.
+
+upstream up
+upstream:pr up 1 app.txt 'one'
+fork fork up 1
+exec git init -q -b main real-checkout
+
+! exec assemble --repo fork --workspace real-checkout
+stderr 'not owned by assemble'
+
+-- up/app.txt --
+base

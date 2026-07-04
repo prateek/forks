@@ -1,0 +1,41 @@
+# A patch conflicting with upstream pauses the run with a resolver prompt;
+# staging a resolution and resuming completes the sync; the harvested rerere
+# cache replays the same resolution on the next sync without pausing.
+
+upstream up
+upstream:pr up 1 feature.txt 'feat'
+fork fork up 1
+mkpatch up fork 0002-charlie.patch core.txt 'charlie-forked'
+upstream:commit up core.txt 'charlie-upstream'
+
+exec assemble --repo fork
+stdout 'result=conflict'
+exists fork/.fork/work/.git/fork-conflict-prompt.md
+grep '0002-charlie.patch' fork/.fork/work/.git/fork-conflict-prompt.md
+grep '<<<<<<<' fork/.fork/work/core.txt
+
+cp resolved.txt fork/.fork/work/core.txt
+exec git -C fork/.fork/work add core.txt
+exec assemble --repo fork --resume
+stdout 'result=synced'
+grep 'charlie-merged' fork/.fork/work/core.txt
+exists fork/rerere
+
+# Same conflict recurs after unrelated upstream motion: rerere replays it.
+upstream:commit up README.md 'churn'
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'auto-resolved from rerere cache'
+grep 'charlie-merged' fork/.fork/work/core.txt
+
+# Harvest keeps only the durable resolution pair; rerere's transient replay
+# bookkeeping must not churn the committed cache.
+exec find fork/rerere -name thisimage
+! stdout thisimage
+
+-- up/core.txt --
+charlie-base
+-- up/README.md --
+readme
+-- resolved.txt --
+charlie-merged

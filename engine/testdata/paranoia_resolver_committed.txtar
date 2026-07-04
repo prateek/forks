@@ -1,0 +1,27 @@
+# A resolver that commits instead of staging is rejected on resume, but its
+# commit recorded the resolution in rerere, so after --abort the fresh run
+# auto-resolves instead of pausing again.
+
+upstream up
+fork fork up 1
+upstream:pr up 1 core.txt 'pr-side'
+upstream:commit up core.txt 'upstream-side'
+
+exec assemble --repo fork
+stdout 'result=conflict'
+
+cp resolved.txt fork/.fork/work/core.txt
+exec git -C fork/.fork/work add core.txt
+exec git -C fork/.fork/work commit -qm 'resolver overstepped'
+! exec assemble --repo fork --resume
+stderr 'no longer in progress'
+
+exec assemble --repo fork --abort
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'auto-resolved from rerere cache'
+
+-- up/core.txt --
+base
+-- resolved.txt --
+merged-by-overstep

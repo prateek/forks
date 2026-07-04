@@ -1,0 +1,30 @@
+# A queued patch file deleted while the run is paused is caught on resume;
+# the run is then mid-step (not awaiting), which --resume also refuses.
+
+upstream up
+fork fork up none
+mkpatch up fork 0001-conflict.patch core.txt 'fork-side'
+mkpatch up fork 0002-follow-up.patch other.txt 'follow-up'
+upstream:commit up core.txt 'upstream-side'
+
+exec assemble --repo fork
+stdout 'result=conflict'
+
+rm fork/patches/0002-follow-up.patch
+cp resolved.txt fork/.fork/work/core.txt
+exec git -C fork/.fork/work add core.txt
+
+! exec assemble --repo fork --resume
+stderr '0002-follow-up.patch'
+
+! exec assemble --repo fork --resume
+stderr 'not awaiting'
+
+exec assemble --repo fork --abort
+
+-- up/core.txt --
+base
+-- up/other.txt --
+other
+-- resolved.txt --
+merged

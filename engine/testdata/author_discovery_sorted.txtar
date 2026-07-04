@@ -1,0 +1,19 @@
+# Author discovery assembles the open PRs returned by the forge in numeric
+# order, even when the forge list response is unsorted.
+
+upstream up
+upstream:pr up 2 feature.txt 'two'
+upstream:pr up 1 app.txt 'one'
+forge:list bot 2,1
+fork:author fork up bot
+
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'PRs merged: #1, #2'
+grep 'one' fork/.fork/work/app.txt
+grep 'two' fork/.fork/work/feature.txt
+
+-- up/app.txt --
+base app
+-- up/feature.txt --
+base feature

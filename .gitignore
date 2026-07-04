@@ -1,0 +1,15 @@
+# engine build artifacts
+/engine/forkengine
+/engine/engine
+
+# per-fork assembly scratch, regenerated every sync
+*/.fork/work/
+*/.fork/assemble.lock
+
+# forge harness runtime
+/evals/forge-harness/.data/
+/evals/forge-harness/.cache/
+
+# python bytecode
+__pycache__/
+*.pyc

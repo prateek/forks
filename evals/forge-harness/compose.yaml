@@ -1,0 +1,22 @@
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:15
+    container_name: fork-harness-forgejo
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - FORGEJO__security__INSTALL_LOCK=true
+      - FORGEJO__server__ROOT_URL=http://localhost:3993/
+      - FORGEJO__server__HTTP_PORT=3000
+      - FORGEJO__server__DISABLE_SSH=true
+      - FORGEJO__actions__ENABLED=true
+      # Resolve short `uses:` refs against github.com like GitHub does, so
+      # workflows exercised here need no forge-specific action names.
+      - FORGEJO__actions__DEFAULT_ACTIONS_URL=github
+      - FORGEJO__repository__DEFAULT_BRANCH=main
+      - FORGEJO__repository__ENABLE_PUSH_CREATE_USER=true
+      - FORGEJO__webhook__ALLOWED_HOST_LIST=*
+    ports:
+      - "127.0.0.1:3993:3000"
+    volumes:
+      - ./.data/forgejo:/data

@@ -1,0 +1,17 @@
+# A local patch whose change is ALSO carried by an open PR is skipped for
+# this assembly but the file is kept: if that PR closes unmerged, the patch
+# is the only remaining carrier of the change.
+
+upstream up
+fork fork up 1
+mkpatch up fork 0001-same.patch core.txt 'the change'
+upstream:pr up 1 core.txt 'the change'
+
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'content already present in the assembled tree'
+exists fork/patches/0001-same.patch
+grep 'the change' fork/.fork/work/core.txt
+
+-- up/core.txt --
+base

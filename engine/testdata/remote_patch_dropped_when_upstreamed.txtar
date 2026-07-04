@@ -1,0 +1,27 @@
+# Once upstream carries the same change a remote patch made, the engine drops
+# it: its [[patches.remote]] entry is removed from fork.toml and the sync still
+# completes.
+
+upstream up
+fork fork up none
+# A local patch the fork keeps carrying, so the fork does not retire when the
+# remote patch is dropped.
+mkpatch up fork 0001-keep.patch keep.txt 'kept-body'
+mkremotepatch up remote/quiet.patch core.txt 'quiet-body'
+fork:remote fork remote/quiet.patch
+
+exec assemble --repo fork
+stdout 'result=synced'
+grep 'patches.remote' fork/.fork/fork.toml
+
+# Upstream absorbs the identical content; the remote patch is now redundant.
+upstream:commit up core.txt 'quiet-body'
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'dropped already-upstream remote patch'
+! grep 'patches.remote' fork/.fork/fork.toml
+# The kept local patch is untouched and still carried.
+grep 'kept-body' fork/.fork/work/keep.txt
+
+-- up/core.txt --
+base

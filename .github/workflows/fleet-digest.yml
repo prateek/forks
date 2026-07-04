@@ -1,0 +1,29 @@
+name: fleet-digest
+
+on:
+  workflow_dispatch:
+  schedule:
+    # randomized daily minute, off :00/:30, distinct from any fork cron
+    - cron: "23 8 * * *"
+
+permissions:
+  contents: read   # checkout + git log for spend
+  issues: write    # upsert + pin the digest issue
+  actions: read    # last run per fork
+
+concurrency:
+  group: fleet-digest
+  cancel-in-progress: true
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git log needs history to read spend from commit bodies
+      - name: upsert fleet status issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/fleet-digest.py

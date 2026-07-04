@@ -1,0 +1,38 @@
+# A fork tracking two open PRs plus one local patch assembles them all onto
+# upstream HEAD; rerunning with nothing changed is a no-op.
+
+upstream up
+upstream:pr up 1 app.txt 'alpha pr-one'
+upstream:pr up 2 feature.txt 'pr-two feature'
+fork fork up 1,2
+mkpatch up fork 0001-local.patch local.txt 'local payload'
+
+exec assemble --repo fork
+stdout 'result=synced'
+stdout 'PRs merged: #1, #2'
+grep 'alpha pr-one' fork/.fork/work/app.txt
+grep 'pr-two feature' fork/.fork/work/feature.txt
+grep 'local payload' fork/.fork/work/local.txt
+check:pinned fork up
+exists fork/.fork/lock.json
+
+exec assemble --repo fork
+stdout 'result=no_op'
+
+exec git -C fork/.fork/work rev-parse HEAD
+cp stdout first-assembled-head
+
+rm -rf fork/.fork/work
+exec assemble --repo fork
+stdout 'result=synced'
+grep 'alpha pr-one' fork/.fork/work/app.txt
+
+# Assembly is deterministic: rebuilding from scratch with identical inputs
+# lands on the identical commit sha (pinned identity + upstream-head dates).
+exec git -C fork/.fork/work rev-parse HEAD
+cmp stdout first-assembled-head
+
+-- up/app.txt --
+alpha
+-- up/README.md --
+readme

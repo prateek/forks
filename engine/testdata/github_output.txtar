@@ -1,0 +1,15 @@
+# Workflow output gets the same result and summary contract as stdout.
+
+upstream up
+upstream:pr up 1 app.txt 'one'
+fork fork up 1
+
+env GITHUB_OUTPUT=github-output
+exec assemble --repo fork
+stdout 'result=synced'
+grep 'result=synced' github-output
+grep 'summary<<EOF_' github-output
+grep 'PRs merged: #1' github-output
+
+-- up/app.txt --
+base

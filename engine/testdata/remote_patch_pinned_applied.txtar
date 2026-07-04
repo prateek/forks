@@ -1,0 +1,19 @@
+# A [[patches.remote]] entry is fetched, sha256-verified, and applied to the
+# assembled tree alongside local patches.
+
+upstream up
+fork fork up none
+mkremotepatch up remote/add-widget.patch widget.txt 'widget-body'
+fork:remote fork remote/add-widget.patch
+
+exec assemble --repo fork
+stdout 'result=synced'
+exists fork/.fork/work/widget.txt
+grep 'widget-body' fork/.fork/work/widget.txt
+
+# The pinned hash is recorded as a drift input, so an unchanged rerun is a no-op.
+exec assemble --repo fork
+stdout 'result=no_op'
+
+-- up/core.txt --
+base
