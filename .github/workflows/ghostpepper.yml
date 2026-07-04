@@ -8,7 +8,7 @@
 #   [self-hosted, tartelet, homelab]        build-job runner: a label list for Tartelet minis, e.g.
 #                    [self-hosted, tartelet, homelab], or macos-latest
 #   37 6 * * *           randomized daily cron minute, off :00/:30
-#   command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO build / xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO -destination 'platform=macOS' test / build/derived/Build/Products/Release/GhostPepper.app   run in the assembled tree
+#   cp GhostPepper/Secrets.example GhostPepper/Secrets.swift; command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO build / xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO -destination 'platform=macOS' test / build/derived/Build/Products/Release/GhostPepper.app   run in the assembled tree
 #   cask           formula | cask
 #   Casks/ghostpepper-fork.rb Formula/<tool>-fork.rb | Casks/<tool>-fork.rb
 #   ghostpepper       official brew token the fork shadows
@@ -175,7 +175,7 @@ jobs:
           set -euo pipefail
           tar -xzf "$RUNNER_TEMP/state.tgz"
           cd ghostpepper/.fork/work
-          command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO build
+          cp GhostPepper/Secrets.example GhostPepper/Secrets.swift; command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO build
           xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO -destination 'platform=macOS' test
           tar -czf "$RUNNER_TEMP/ghostpepper-asset.tar.gz" build/derived/Build/Products/Release/GhostPepper.app
       - name: upload asset
