@@ -67,6 +67,31 @@ the three jobs do is in [AGENTS.md](../../../AGENTS.md#how-a-sync-runs). Nothing
 to do by hand unless a run reports `conflict` (a needs-human self-issue lands on
 this repo) — see [Resolve a paused conflict](#resolve-a-paused-conflict).
 
+## Signing & Gatekeeper (macOS app forks)
+
+App-cask forks are **ad-hoc signed, not notarized** — and that's enough, even on
+a Jamf-managed Mac whose Gatekeeper is MDM-locked to "App Store & Known
+Developers." Gatekeeper only blocks *quarantined* apps; a validly ad-hoc-signed,
+non-quarantined app launches. Two rules make it work:
+
+- **Build a valid ad-hoc signature.** `xcodebuild … CODE_SIGNING_ALLOWED=NO`
+  leaves an unsigned bundle with no sealed resources — it launches as "damaged"
+  (`code has no resources but signature indicates they must be present`) on *any*
+  Mac. The build seals it with `codesign --force --deep --sign -` (in
+  `templates/fork.yml`).
+- **Strip quarantine in the cask, not with `--no-quarantine`.** brew
+  re-quarantines on `upgrade` and dropped the install CLI flag, so the cask
+  carries a `postflight` that runs `xattr -dr com.apple.quarantine`. It fires on
+  every install/upgrade/reinstall, so plain `brew upgrade` keeps the fork
+  launchable.
+
+**Developer ID + notarization is deliberately avoided** — unnecessary given the
+above, and Apple stalls new-account notary submissions "In Progress" for days (a
+known 2026 issue). If a policy ever *requires* it, the sign/notarize job is in
+git history (search `notarytool`); revive it only once the account is warmed up.
+Notary status has no web UI — query it with an ES256 JWT against
+`notary/v2/submissions` (no Xcode needed).
+
 ## Carry more work
 
 Edit `<tool>/.fork/fork.toml` (or drop a file in `<tool>/patches/`), then push:
@@ -183,3 +208,27 @@ never in CI.
   (see the harness header).
 - After editing `templates/fork.yml`, re-render with test values and run
   `actionlint`.
+
+## Gotchas (learned from ghost-pepper)
+
+- **Re-run `sync-fork-secrets` after any vault edit.** GitHub secrets are a
+  snapshot; renaming or replacing a vault item leaves CI on stale values — a 401
+  that looks like bad creds but isn't. Refs are UUID-pinned so a rename doesn't
+  break the *refs*, only the already-pushed *values* go stale.
+- **Diagnose creds without Xcode:** an ES256 JWT (App Store Connect API key)
+  against `/v1/apps` or `/notary/v2/submissions` tells you if the creds are valid
+  vs. the environment (clock, stale secret) is the problem.
+- **App build quirks surface only on the real mini build:** a gitignored
+  `Secrets.swift` (copy the committed `Secrets.example` first); `@testable` tests
+  need a Debug build; the release asset needs the `.app` at the tarball **root**
+  (`tar -C "$(dirname OUT)" "$(basename OUT)"`). Prefer a build-succeeded smoke
+  over the full test suite — network-dependent tests hang in the secrets-free
+  build job. The mock-based reconcile test won't catch real-`brew` breakage
+  (that's how the dropped `--no-quarantine` CLI flag slipped to a live apply).
+- **The `src` gitlink needs a `.gitmodules` entry** or the next `checkout` fails
+  with "No url found for submodule path"; `publish` writes it.
+- **`publish` pushes to `main`,** so a local clone goes stale after every run —
+  `git fetch && git rebase origin/main` before pushing more changes.
+- **Heavy Xcode builds can wedge a mini** (OOM → SSH + runner heartbeat die); the
+  build is `nice`d, `-jobs`-bounded, build-only-smoke, and short-timeout to avoid
+  it. A networked smart plug / autoping PDU makes a headless mini self-recover.

@@ -71,8 +71,11 @@ never shares a runner with credentials:
    assemble; on conflict, run `claude-sonnet-5` resume rounds under a narrow git
    allowlist. Exits `no_op` fast when nothing changed. Emits the state sha.
 2. `build` (Tartelet mini for macOS forks, hosted otherwise; **no secrets**,
-   `permissions: {}`) — run BUILD + SMOKE on the assembled tree. Upstream code
-   executes only here.
+   `permissions: {}`) — run BUILD + SMOKE on the assembled tree, and ad-hoc-sign
+   app casks (`codesign --force --deep --sign -`). Upstream code executes only
+   here. Forks are ad-hoc signed, not notarized; the cask strips quarantine in a
+   `postflight` so they launch even on a Jamf Mac. See the `fork-ops` skill's
+   "Signing & Gatekeeper" for why, and the notarization escape hatch.
 3. `publish` (hosted ubuntu, app token) — verify the state sha against resolve's
    output, push `assembled` + `assembled-<tag>` to `prateek/<upstream>`, record
    the `src` gitlink, cut the release with the built asset, commit the
