@@ -125,8 +125,8 @@ the upstream PR, then track it in `fork.toml`.
   `<tool>/.fork/fork.toml` plus `<tool>/patches/`
 - Installed vs latest: `brew info prateek/forks/<tool>-fork` against the latest
   `<tool>-v*` release
-- Fleet at a glance: the pinned **fleet status** issue (upserted by
-  `.github/workflows/fleet-digest.yml`)
+- Fleet at a glance: the **Fleet status** table in `README.md`, refreshed by
+  `.github/workflows/fleet-digest.yml` (daily cron, and after every release)
 
 ## Local engine runs
 
@@ -241,3 +241,9 @@ never in CI.
 - **Heavy Xcode builds can wedge a mini** (OOM → SSH + runner heartbeat die); the
   build is `nice`d, `-jobs`-bounded, build-only-smoke, and short-timeout to avoid
   it. A networked smart plug / autoping PDU makes a headless mini self-recover.
+- **The lint hooks need structural exclusions.** `templates/*.yml` isn't valid
+  YAML — an `@VAR@` scalar starts with `@`, a YAML-reserved indicator — so
+  check-yaml and actionlint skip `templates/`; render first, then lint. `patches/`
+  and `rerere/` are whitespace-significant, so the whitespace hooks skip them.
+  Re-apply these in `.pre-commit-config.yaml` if you add a hook that walks the
+  whole tree.
