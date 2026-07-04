@@ -179,6 +179,11 @@ jobs:
           cd ghostpepper/.fork/work
           cp GhostPepper/Secrets.example GhostPepper/Secrets.swift; command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; nice -n 10 xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation -jobs 4 CODE_SIGNING_ALLOWED=NO build
           test -d build/derived/Build/Products/Release/GhostPepper.app
+          # App casks need a valid signature to launch. Ad-hoc is enough for a
+          # non-quarantined install: the reconciler installs --no-quarantine and
+          # Gatekeeper only gates quarantined apps. The xcodebuild output is
+          # unsigned, so seal it here (no secrets, no Developer ID, no notarize).
+          if [ "cask" = "cask" ]; then codesign --force --deep --sign - "build/derived/Build/Products/Release/GhostPepper.app"; fi
           # Archive the artifact at the tarball root by basename, so a cask's
           # `app "X.app"` / a formula's basename install finds it after extract.
           tar -czf "$RUNNER_TEMP/ghostpepper-asset.tar.gz" -C "$(dirname build/derived/Build/Products/Release/GhostPepper.app)" "$(basename build/derived/Build/Products/Release/GhostPepper.app)"
@@ -189,89 +194,8 @@ jobs:
           path: ${{ runner.temp }}/ghostpepper-asset.tar.gz
           retention-days: 1
 
-  sign:
-    needs: [resolve, build]
-    if: needs.resolve.outputs.result == 'synced'
-    runs-on: [self-hosted, tartelet, homelab]
-    timeout-minutes: 30
-    # Holds the Developer ID + notary secrets. It runs only codesign/notarytool
-    # on the opaque build artifact — never upstream code — so, like publish, it
-    # is safe to hold secrets. Ephemeral Tart VMs keep it off the build VM.
-    permissions: {}
-    steps:
-      - name: fetch built asset
-        uses: actions/download-artifact@v4
-        with:
-          name: fork-ghostpepper-asset
-          path: ${{ runner.temp }}
-      - name: sign + notarize
-        env:
-          CERT_P12: ${{ secrets.FORK_SIGN_CERT_P12 }}
-          CERT_PASSWORD: ${{ secrets.FORK_SIGN_CERT_PASSWORD }}
-          NOTARY_ISSUER: ${{ secrets.FORK_NOTARY_ISSUER_ID }}
-          NOTARY_KEY_ID: ${{ secrets.FORK_NOTARY_KEY_ID }}
-          NOTARY_KEY_P8: ${{ secrets.FORK_NOTARY_KEY_P8 }}
-        run: |
-          set -euo pipefail
-          asset="$RUNNER_TEMP/ghostpepper-asset.tar.gz"
-          # Only app casks are Gatekeeper-checked and need Developer ID +
-          # notarization; formulae pass through unchanged.
-          if [ "cask" != "cask" ]; then
-            echo "kind=cask; no Developer ID signing needed; passing the build asset through"
-            exit 0
-          fi
-
-          work="$RUNNER_TEMP/sign"; rm -rf "$work"; mkdir -p "$work"
-          tar -xzf "$asset" -C "$work"
-          app="$work/GhostPepper.app"
-
-          # Import the Developer ID cert into a throwaway keychain.
-          kc="$RUNNER_TEMP/fork-sign.keychain-db"
-          kcpw="fork-${RANDOM}${RANDOM}${RANDOM}"
-          security create-keychain -p "$kcpw" "$kc"
-          security set-keychain-settings -lut 3600 "$kc"
-          security unlock-keychain -p "$kcpw" "$kc"
-          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign
-          # The exported .p12 is leaf + key only; import Apple's Developer ID G2
-          # intermediate so codesign can build the chain to the (system-trusted) root.
-          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DevIDG2.cer"
-          security import "$RUNNER_TEMP/DevIDG2.cer" -k "$kc"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
-          # Search the temp keychain (keep the existing list) so codesign resolves the identity.
-          # shellcheck disable=SC2046  # intentional split of the existing keychain list into args
-          security list-keychains -d user -s "$kc" $(security list-keychains -d user | sed 's/"//g')
-          # No -v: a fresh keychain's trust domain reports the cert "invalid" even
-          # though codesign builds a valid chain from it (verified locally).
-          identity="$(security find-identity -p codesigning "$kc" | awk '/Developer ID Application/{print $2; exit}')"
-          [ -n "$identity" ] || { echo "no Developer ID Application identity found in the cert" >&2; exit 1; }
-
-          # Sign the whole bundle with hardened runtime + secure timestamp.
-          # --deep signs nested code inner-out in the right order.
-          codesign --force --deep --options runtime --timestamp --sign "$identity" "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
-
-          # Notarize with the App Store Connect API key, then staple the ticket.
-          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notary.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notary.zip" \
-            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
-          xcrun stapler staple "$app"
-
-          tar -czf "$asset" -C "$work" "GhostPepper.app"
-
-          # Scrub the signing material from the ephemeral VM.
-          security delete-keychain "$kc" || true
-          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/notary.zip"
-      - name: upload signed asset
-        uses: actions/upload-artifact@v4
-        with:
-          name: fork-ghostpepper-asset-signed
-          path: ${{ runner.temp }}/ghostpepper-asset.tar.gz
-          retention-days: 1
-
   publish:
-    needs: [resolve, build, sign]
+    needs: [resolve, build]
     if: needs.resolve.outputs.result == 'synced'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -288,7 +212,7 @@ jobs:
       - name: fetch built asset
         uses: actions/download-artifact@v4
         with:
-          name: fork-ghostpepper-asset-signed
+          name: fork-ghostpepper-asset
           path: ${{ runner.temp }}
 
       # GitHub only: mint a contents token scoped to the upstream fork for the
