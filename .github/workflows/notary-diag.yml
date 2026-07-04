@@ -1,0 +1,22 @@
+name: notary-diag
+on: workflow_dispatch
+permissions: {}
+jobs:
+  diag:
+    runs-on: [self-hosted, tartelet, homelab]
+    timeout-minutes: 10
+    steps:
+      - name: notary auth check on the VM
+        env:
+          NOTARY_ISSUER: ${{ secrets.FORK_NOTARY_ISSUER_ID }}
+          NOTARY_KEY_ID: ${{ secrets.FORK_NOTARY_KEY_ID }}
+          NOTARY_KEY_P8: ${{ secrets.FORK_NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          echo "vm-date-utc: $(date -u +%FT%TZ)"
+          echo "lengths: kid=${#NOTARY_KEY_ID} issuer=${#NOTARY_ISSUER} p8b64=${#NOTARY_KEY_P8}"
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/n.p8"
+          echo "p8-first-line: $(head -1 "$RUNNER_TEMP/n.p8")"
+          echo "--- notarytool history (auth check) ---"
+          xcrun notarytool history --key "$RUNNER_TEMP/n.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" 2>&1 | head -12
+          rm -f "$RUNNER_TEMP/n.p8"
