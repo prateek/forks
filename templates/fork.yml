@@ -276,11 +276,17 @@ jobs:
           git -C "$work" -c http.extraHeader="$(fork_hdr "$push_tok")" \
             push --quiet --force "$fork_url" "HEAD:refs/tags/assembled-${tag}"
           git update-index --add --cacheinfo 160000,"$assembled",@TOOL@/src
+          # A gitlink needs a matching .gitmodules entry or later checkouts
+          # fail with "No url found for submodule path". CI never clones it;
+          # this is provenance + a URL for humans running `git submodule update`.
+          git config -f .gitmodules submodule."@TOOL@/src".path "@TOOL@/src"
+          git config -f .gitmodules submodule."@TOOL@/src".url "$fork_url"
+          git config -f .gitmodules submodule."@TOOL@/src".branch assembled
 
           # Commit manifest + gitlink to the monorepo. Ephemeral runners
           # re-assemble every tick, so `synced` alone is not release-worthy;
           # the committed content is.
-          git add @TOOL@/.fork/fork.toml @TOOL@/.fork/lock.json
+          git add .gitmodules @TOOL@/.fork/fork.toml @TOOL@/.fork/lock.json
           [ -d @TOOL@/patches ] && git add @TOOL@/patches || true
           [ -d @TOOL@/rerere ] && git add @TOOL@/rerere || true
           if git diff --cached --quiet; then

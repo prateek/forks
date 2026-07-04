@@ -276,11 +276,17 @@ jobs:
           git -C "$work" -c http.extraHeader="$(fork_hdr "$push_tok")" \
             push --quiet --force "$fork_url" "HEAD:refs/tags/assembled-${tag}"
           git update-index --add --cacheinfo 160000,"$assembled",ghostpepper/src
+          # A gitlink needs a matching .gitmodules entry or later checkouts
+          # fail with "No url found for submodule path". CI never clones it;
+          # this is provenance + a URL for humans running `git submodule update`.
+          git config -f .gitmodules submodule."ghostpepper/src".path "ghostpepper/src"
+          git config -f .gitmodules submodule."ghostpepper/src".url "$fork_url"
+          git config -f .gitmodules submodule."ghostpepper/src".branch assembled
 
           # Commit manifest + gitlink to the monorepo. Ephemeral runners
           # re-assemble every tick, so `synced` alone is not release-worthy;
           # the committed content is.
-          git add ghostpepper/.fork/fork.toml ghostpepper/.fork/lock.json
+          git add .gitmodules ghostpepper/.fork/fork.toml ghostpepper/.fork/lock.json
           [ -d ghostpepper/patches ] && git add ghostpepper/patches || true
           [ -d ghostpepper/rerere ] && git add ghostpepper/rerere || true
           if git diff --cached --quiet; then

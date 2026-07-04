@@ -1,0 +1,4 @@
+[submodule "ghostpepper/src"]
+	path = ghostpepper/src
+	url = https://github.com/prateek/ghost-pepper.git
+	branch = assembled
