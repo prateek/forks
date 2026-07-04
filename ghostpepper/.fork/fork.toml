@@ -1,0 +1,39 @@
+# fork.toml - manifest of one fork in the prateek/forks monorepo.
+# The sync engine (../engine) reads [upstream], [prs], [branches], [patches];
+# `sha`, `track`, and remote-patch entries are engine-maintained. The rest is
+# read by setup/the workflow. Edit the hand-owned fields by hand.
+
+[upstream]
+repo = "matthartman/ghost-pepper"
+branch = "main"
+sha = ""
+
+[prs]
+# Prateek's open upstream PRs, merged in list order. Auto-dropped on
+# merge/close. (Use `author = "<login>"` instead for auto-discovery.)
+track = [141, 143]
+
+# Internal work living on the upstream fork, merged after PRs. Auto-dropped
+# once upstream absorbs the change. Uncomment and point url at the fork.
+# [branches]
+# url = "https://github.com/prateek/ghost-pepper.git"
+# track = ["my-wip-branch"]
+
+# Curl-able patches pinned by content hash, applied after local patches/*.patch.
+# A sha256 mismatch is a hard failure. Auto-dropped once upstreamed.
+# [[patches.remote]]
+# url = "https://github.com/owner/repo/commit/deadbeef.patch"
+# sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[build]
+command = "command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO build"
+output = "build/derived/Build/Products/Release/GhostPepper.app"
+smoke = "xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO -destination 'platform=macOS' test"
+
+[release]
+kind = "cask"
+tool = "ghostpepper"
+
+# The monorepo is its own Homebrew tap; releases and the formula/cask live here.
+[tap]
+repo = "prateek/forks"

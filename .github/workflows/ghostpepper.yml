@@ -1,0 +1,400 @@
+# <tool>.yml - one fork's workflow in the prateek/forks monorepo.
+# Rendered from the downstream-fork skill template; @VAR@ placeholders are
+# filled at setup. Placeholders:
+#   ghostpepper           short fork name (package becomes <tool>-fork)
+#   prateek / ghost-pepper
+#                    owner and repo of the plain upstream fork (holds
+#                    `assembled`); e.g. prateek and ghost-pepper
+#   [self-hosted, tartelet, homelab]        build-job runner: a label list for Tartelet minis, e.g.
+#                    [self-hosted, tartelet, homelab], or macos-latest
+#   37 6 * * *           randomized daily cron minute, off :00/:30
+#   command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO build / xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO -destination 'platform=macOS' test / build/derived/Build/Products/Release/GhostPepper.app   run in the assembled tree
+#   cask           formula | cask
+#   Casks/ghostpepper-fork.rb Formula/<tool>-fork.rb | Casks/<tool>-fork.rb
+#   ghostpepper       official brew token the fork shadows
+#
+# Trust model: three jobs so untrusted upstream code never shares a runner with
+# credentials. `resolve` holds only the Claude token; `build` runs upstream
+# BUILD/SMOKE with ZERO secrets and read-only contents; `publish` holds the
+# GitHub App key and runs only our shell, taking git/manifest state from
+# `resolve` and treating the `build` asset as an opaque payload. Never
+# pull_request-triggered (public repo + self-hosted runners). GitHub-only steps
+# gate on the server URL so the same file runs on the local Forgejo harness.
+name: ghostpepper
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '37 6 * * *'
+
+concurrency:
+  group: fork-ghostpepper
+  cancel-in-progress: false
+
+# Every job sets its own permissions; deny by default so a future job that
+# forgets to cannot inherit repo/org defaults.
+permissions: {}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+      summary_b64: ${{ steps.result.outputs.summary_b64 }}
+      state_sha256: ${{ steps.pkg.outputs.state_sha256 }}
+    steps:
+      - name: checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+
+      - name: resolver gate
+        id: gate
+        env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OAUTH" ] || [ -n "$KEY" ]; then
+            echo "resolver=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "resolver=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: assemble
+        id: assemble
+        env:
+          # gh needs a token to run in Actions; public upstream PR state is
+          # readable with the read-only job token. FORGE_TOKEN covers the
+          # local Forgejo harness.
+          GH_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          set -euo pipefail
+          go -C engine build -o "$RUNNER_TEMP/assemble" .
+          "$RUNNER_TEMP/assemble" --repo "$PWD/ghostpepper"
+
+      - name: resolve conflicts with claude
+        id: resume
+        if: steps.assemble.outputs.result == 'conflict' && steps.gate.outputs.resolver == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code
+          prompt="ghostpepper/.fork/work/.git/fork-conflict-prompt.md"
+          spend=0
+          # Each PR/branch/patch pauses independently, so a sync can conflict
+          # several times; resolve-and-resume until the engine reports a
+          # non-conflict result. The resolver holds only its own credential and
+          # gets a narrow git allowlist (no push/fetch/config/remote); the
+          # engine's resume contract reverts anything it changes outside the
+          # conflicted set.
+          for round in 1 2 3 4 5; do
+            echo "resolver round $round"
+            out="$(claude -p "$(cat "$prompt")" \
+              --model claude-sonnet-5 --output-format json \
+              --allowedTools "Bash(git add:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout:*),Read,Edit,Grep,Glob" \
+              --max-turns 40 2>/dev/null || true)"
+            cost="$(printf '%s' "$out" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read() or "{}").get("total_cost_usd") or 0)' 2>/dev/null || echo 0)"
+            # Values passed as argv, never interpolated into the program text.
+            spend="$(python3 -c 'import sys; print(round(float(sys.argv[1]) + float(sys.argv[2]), 4))' "$spend" "$cost" 2>/dev/null || echo "$spend")"
+            echo "resolver round $round: \$$cost (cumulative \$$spend)" >>"$GITHUB_STEP_SUMMARY"
+            git -C ghostpepper/.fork/work diff --stat >>"$GITHUB_STEP_SUMMARY" || true
+            if r="$("$RUNNER_TEMP/assemble" --repo "$PWD/ghostpepper" --resume 2>&1)"; then
+              printf '%s\n' "$r"
+              case "$r" in *result=conflict*) continue ;; *) break ;; esac
+            else
+              printf '%s\n' "$r"
+              echo "resolver declined or resume refused; escalating to a human"
+              break
+            fi
+          done
+          echo "resolver_spend_usd=$spend" >>"$GITHUB_OUTPUT"
+
+      - name: consolidate result
+        id: result
+        env:
+          FIRST: ${{ steps.assemble.outputs.result }}
+          FIRST_SUMMARY: ${{ steps.assemble.outputs.summary }}
+          SECOND: ${{ steps.resume.outputs.result }}
+          SECOND_SUMMARY: ${{ steps.resume.outputs.summary }}
+          SPEND: ${{ steps.resume.outputs.resolver_spend_usd }}
+        run: |
+          set -euo pipefail
+          result="${SECOND:-$FIRST}"
+          summary="${SECOND_SUMMARY:-$FIRST_SUMMARY}"
+          [ -n "${SPEND:-}" ] && summary="$summary"$'\n'"resolver spend: \$${SPEND}"
+          echo "result=$result" >>"$GITHUB_OUTPUT"
+          # base64 keeps the multi-line summary a single output value.
+          echo "summary_b64=$(printf '%s' "$summary" | base64 | tr -d '\n')" >>"$GITHUB_OUTPUT"
+
+      - name: package state for publish
+        id: pkg
+        if: steps.result.outputs.result == 'synced' || steps.result.outputs.result == 'retire'
+        run: |
+          set -euo pipefail
+          # tar (not bare upload-artifact) preserves exec bits and symlinks.
+          tar -czf "$RUNNER_TEMP/state.tgz" ghostpepper
+          # Publish verifies this against the artifact it downloads, so a
+          # compromised build cannot swap in a poisoned state tree.
+          echo "state_sha256=$(shasum -a 256 "$RUNNER_TEMP/state.tgz" | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+
+      - name: upload assembled state
+        if: steps.result.outputs.result == 'synced' || steps.result.outputs.result == 'retire'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-ghostpepper-state
+          path: ${{ runner.temp }}/state.tgz
+          retention-days: 1
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: [self-hosted, tartelet, homelab]
+    timeout-minutes: 90
+    # This job runs untrusted upstream BUILD/SMOKE; it must hold no token.
+    # download-artifact authenticates with ACTIONS_RUNTIME_TOKEN, not
+    # GITHUB_TOKEN, so an empty permission set is sufficient.
+    permissions: {}
+    steps:
+      - name: fetch assembled state
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-ghostpepper-state
+          path: ${{ runner.temp }}
+      - name: build and smoke (runs upstream code; no secrets)
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+          cd ghostpepper/.fork/work
+          command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation CODE_SIGNING_ALLOWED=NO -destination 'platform=macOS' test
+          tar -czf "$RUNNER_TEMP/ghostpepper-asset.tar.gz" build/derived/Build/Products/Release/GhostPepper.app
+      - name: upload asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-ghostpepper-asset
+          path: ${{ runner.temp }}/ghostpepper-asset.tar.gz
+          retention-days: 1
+
+  publish:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: checkout monorepo
+        uses: actions/checkout@v4
+      - name: fetch assembled state
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-ghostpepper-state
+          path: ${{ runner.temp }}
+      - name: fetch built asset
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-ghostpepper-asset
+          path: ${{ runner.temp }}
+
+      # GitHub only: mint a contents token scoped to the upstream fork for the
+      # assembled-branch push. On the forge, FORGE_TOKEN covers it.
+      - name: mint fork push token
+        if: github.server_url == 'https://github.com'
+        id: mint
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORK_APP_ID }}
+          private-key: ${{ secrets.FORK_APP_PRIVATE_KEY }}
+          owner: prateek
+          repositories: ghost-pepper
+          permission-contents: write
+
+      - name: publish
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORK_TOKEN: ${{ steps.mint.outputs.token }}
+          SUMMARY_B64: ${{ needs.resolve.outputs.summary_b64 }}
+          STATE_SHA256: ${{ needs.resolve.outputs.state_sha256 }}
+        run: |
+          set -euo pipefail
+          summary="$(printf '%s' "$SUMMARY_B64" | base64 -d)"
+
+          # Integrity gate: the state tar comes from resolve, but build (which
+          # runs untrusted code) shares the artifact backend. Verify against
+          # resolve's job output — build cannot rewrite another job's output —
+          # before trusting a byte of it.
+          got="$(shasum -a 256 "$RUNNER_TEMP/state.tgz" | cut -d' ' -f1)"
+          if [ "$got" != "$STATE_SHA256" ]; then
+            echo "state artifact sha mismatch: expected $STATE_SHA256, got $got" >&2
+            exit 1
+          fi
+
+          # Overlay the engine's post-assembly state (manifest, patches, rerere,
+          # and the assembled work repo) taken from resolve, never from build.
+          rm -rf ghostpepper
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+
+          git config user.name fork-assemble
+          git config user.email fork-assemble@invalid
+
+          # git-over-HTTPS auth: GitHub wants Basic x-access-token:<token>;
+          # Gitea/Forgejo accepts the token scheme. Origin (the monorepo)
+          # pushes use the credentials actions/checkout already persisted.
+          fork_hdr() {
+            if [ "$GITHUB_SERVER_URL" = "https://github.com" ]; then
+              printf 'Authorization: Basic %s' "$(printf 'x-access-token:%s' "$1" | base64 | tr -d '\n')"
+            else
+              printf 'Authorization: token %s' "$1"
+            fi
+          }
+
+          # Push the assembled commit to the upstream fork's `assembled` branch
+          # plus a permanent tag, then record it as the src gitlink.
+          work="ghostpepper/.fork/work"
+          assembled="$(git -C "$work" rev-parse HEAD)"
+          tag="ghostpepper-v$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          fork_url="${GITHUB_SERVER_URL}/prateek/ghost-pepper.git"
+          push_tok="${FORK_TOKEN:-$FORGE_TOKEN}"
+          git -C "$work" -c http.extraHeader="$(fork_hdr "$push_tok")" \
+            push --quiet --force "$fork_url" "HEAD:refs/heads/assembled"
+          git -C "$work" -c http.extraHeader="$(fork_hdr "$push_tok")" \
+            push --quiet --force "$fork_url" "HEAD:refs/tags/assembled-${tag}"
+          git update-index --add --cacheinfo 160000,"$assembled",ghostpepper/src
+
+          # Commit manifest + gitlink to the monorepo. Ephemeral runners
+          # re-assemble every tick, so `synced` alone is not release-worthy;
+          # the committed content is.
+          git add ghostpepper/.fork/fork.toml ghostpepper/.fork/lock.json
+          [ -d ghostpepper/patches ] && git add ghostpepper/patches || true
+          [ -d ghostpepper/rerere ] && git add ghostpepper/rerere || true
+          if git diff --cached --quiet; then
+            echo "manifest unchanged; nothing to release"
+            echo "released=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "sync(ghostpepper): $(printf '%s' "$summary" | head -1)" -m "$summary"
+          # origin auth is the token actions/checkout persisted; default-token
+          # pushes do not retrigger workflows.
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+
+          asset="$RUNNER_TEMP/ghostpepper-asset.tar.gz"
+          asset_name="$(basename "$asset")"
+          if [ "$GITHUB_SERVER_URL" = "https://github.com" ]; then
+            GH_TOKEN="$GITHUB_TOKEN" gh release create "$tag" --title "$tag" --notes "$summary" "$asset"
+          else
+            rid="$(jq -n --arg tag "$tag" --arg body "$summary" \
+              '{tag_name: $tag, name: $tag, body: $body, target_commitish: "'"${GITHUB_REF_NAME}"'"}' \
+              | curl -fsS -X POST -H "Authorization: token ${FORGE_TOKEN}" \
+                  -H "Content-Type: application/json" --data-binary @- \
+                  "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases" \
+              | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
+            curl -fsS -X POST -H "Authorization: token ${FORGE_TOKEN}" \
+              -F "attachment=@${asset};filename=${asset_name}" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/${rid}/assets?name=${asset_name}" >/dev/null
+          fi
+          {
+            echo "released=true"
+            echo "tag=$tag"
+            echo "asset=$asset"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: publish tap package
+        if: steps.publish.outputs.released == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.publish.outputs.tag }}
+          ASSET: ${{ steps.publish.outputs.asset }}
+        run: |
+          set -euo pipefail
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "$ASSET")"
+          sha="$(shasum -a 256 "$ASSET" | cut -d' ' -f1)"
+          version="${TAG#ghostpepper-v}"
+          mkdir -p "$(dirname "Casks/ghostpepper-fork.rb")"
+          sed -e "s|@URL@|$url|" -e "s|@SHA256@|$sha|" -e "s|@VERSION@|$version|" \
+            ghostpepper/.fork/packaging.rb >"Casks/ghostpepper-fork.rb"
+          git add "Casks/ghostpepper-fork.rb"
+          if git diff --cached --quiet; then
+            echo "tap already current"
+            exit 0
+          fi
+          git commit -q -m "ghostpepper-fork ${version} (auto-built)"
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          echo "tap updated: Casks/ghostpepper-fork.rb -> ${version}"
+
+  lifecycle:
+    needs: resolve
+    if: needs.resolve.outputs.result == 'conflict' || needs.resolve.outputs.result == 'retire'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+      actions: write
+    steps:
+      - name: checkout monorepo
+        if: needs.resolve.outputs.result == 'retire'
+        uses: actions/checkout@v4
+      - name: fetch assembled state
+        if: needs.resolve.outputs.result == 'retire'
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-ghostpepper-state
+          path: ${{ runner.temp }}
+
+      - name: report conflict
+        if: needs.resolve.outputs.result == 'conflict'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          SUMMARY_B64: ${{ needs.resolve.outputs.summary_b64 }}
+        run: |
+          set -euo pipefail
+          summary="$(printf '%s' "$SUMMARY_B64" | base64 -d)"
+          tok="${FORGE_TOKEN:-$GITHUB_TOKEN}"
+          jq -n --arg body "$summary" \
+            '{title: "ghostpepper sync conflict needs a human", body: $body}' \
+            | curl -fsS -X POST -H "Authorization: token ${tok}" \
+                -H "Content-Type: application/json" --data-binary @- \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues" >/dev/null
+          echo "conflict escalated as an issue"
+
+      - name: retire
+        if: needs.resolve.outputs.result == 'retire'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf ghostpepper
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+          git config user.name fork-assemble
+          git config user.email fork-assemble@invalid
+          mkdir -p ghostpepper/.fork
+          printf 'retired %s\n' "$(date -u +%FT%TZ)" >ghostpepper/.fork/retired
+          git add ghostpepper/.fork/retired ghostpepper/.fork/fork.toml ghostpepper/.fork/lock.json
+          git commit -q -m "retire(ghostpepper): nothing left to carry"
+          # origin auth is the token actions/checkout persisted.
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          tok="${FORGE_TOKEN:-$GITHUB_TOKEN}"
+          jq -n '{title: "ghostpepper retired: flip packages.toml back to ghostpepper",
+                  body: "All tracked PRs merged/closed, no tracked branches, and no patches remain. Run the fork-lifecycle skill in dotfiles to remove prateek/forks/ghostpepper-fork from packages.toml."}' \
+            | curl -fsS -X POST -H "Authorization: token ${tok}" \
+                -H "Content-Type: application/json" --data-binary @- \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues" >/dev/null
+          # gh workflow disable is GitHub-only; the forge has no equivalent here.
+          if [ "$GITHUB_SERVER_URL" = "https://github.com" ]; then
+            GH_TOKEN="$GITHUB_TOKEN" gh workflow disable ghostpepper.yml
+          fi
+          echo "retired ghostpepper"
