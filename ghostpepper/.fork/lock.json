@@ -1,9 +1,0 @@
-{
-  "upstream_sha": "fbfe41d6f1564c94ee41698008e7634d75e22902",
-  "assembled_head": "a957dd0a3862dcd46eeb2da2452da268da59e7a7",
-  "pr_heads": {
-    "141": "7f096a74560824e30682f888f1fe918509915bba",
-    "143": "7cc2fda698de649af8a69eb8d2fb2e6d170054a3"
-  },
-  "patches": {}
-}
