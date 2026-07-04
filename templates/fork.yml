@@ -179,7 +179,9 @@ jobs:
           cd @TOOL@/.fork/work
           @BUILD_COMMAND@
           @SMOKE_COMMAND@
-          tar -czf "$RUNNER_TEMP/@TOOL@-asset.tar.gz" @BUILD_OUTPUT@
+          # Archive the artifact at the tarball root by basename, so a cask's
+          # `app "X.app"` / a formula's basename install finds it after extract.
+          tar -czf "$RUNNER_TEMP/@TOOL@-asset.tar.gz" -C "$(dirname @BUILD_OUTPUT@)" "$(basename @BUILD_OUTPUT@)"
       - name: upload asset
         uses: actions/upload-artifact@v4
         with:

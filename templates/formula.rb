@@ -9,7 +9,8 @@ class @CLASS@Fork < Formula
   version "@VERSION@"
 
   def install
-    bin.install "@BUILD_OUTPUT@" => "@TOOL@"
+    # The release asset holds the build output at its root by basename.
+    bin.install File.basename("@BUILD_OUTPUT@") => "@TOOL@"
   end
 
   test do

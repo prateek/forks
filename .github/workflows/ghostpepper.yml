@@ -179,7 +179,9 @@ jobs:
           cd ghostpepper/.fork/work
           cp GhostPepper/Secrets.example GhostPepper/Secrets.swift; command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; nice -n 10 xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation -jobs 4 CODE_SIGNING_ALLOWED=NO build
           test -d build/derived/Build/Products/Release/GhostPepper.app
-          tar -czf "$RUNNER_TEMP/ghostpepper-asset.tar.gz" build/derived/Build/Products/Release/GhostPepper.app
+          # Archive the artifact at the tarball root by basename, so a cask's
+          # `app "X.app"` / a formula's basename install finds it after extract.
+          tar -czf "$RUNNER_TEMP/ghostpepper-asset.tar.gz" -C "$(dirname build/derived/Build/Products/Release/GhostPepper.app)" "$(basename build/derived/Build/Products/Release/GhostPepper.app)"
       - name: upload asset
         uses: actions/upload-artifact@v4
         with:
