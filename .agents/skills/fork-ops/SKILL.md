@@ -149,9 +149,10 @@ CI never talks to 1Password. Two apps, one vault, three GitHub secrets.
 - **App for Tartelet runner registration** — separate app, credentials live only
   in the mini's keychain; no workflow references them. `prateek/forks` must be in
   its installation so the minis can register as runners.
-- **Vault `gh-prateek-fork-automation`** (name stays colon-free; `:` breaks
-  `op://` refs): item `prateek-fork-automation` (`app-id`, `private-key`) and
-  item `claude` (`oauth-token`, from `claude setup-token`).
+- **Vault `gh-prateek-fork-automation`** holds the GitHub App credentials and
+  the Claude OAuth token (from `claude setup-token`). `sync-fork-secrets` pins
+  its `op://` refs to vault/item/field **UUIDs** so a rename in 1Password can't
+  silently break the sync.
 - **Three GitHub secrets on `prateek/forks`**, referenced one-job-each:
   `CLAUDE_CODE_OAUTH_TOKEN` (resolve), `FORK_APP_ID` + `FORK_APP_PRIVATE_KEY`
   (publish). They are **repo-level** — every per-tool workflow shares them — so
