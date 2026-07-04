@@ -7,8 +7,8 @@ on:
     - cron: "23 8 * * *"
 
 permissions:
-  contents: read   # checkout + git log for spend
-  issues: write    # upsert + pin the digest issue
+  contents: write  # commit the refreshed status into README.md
+  issues: read     # list needs-human self-issues per fork
   actions: read    # last run per fork
 
 concurrency:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # git log needs history to read spend from commit bodies
-      - name: upsert fleet status issue
+      - name: upsert fleet status in README
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/fleet-digest.py

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Upsert a pinned "fleet status" issue summarizing every fork in prateek/forks.
+"""Refresh the "Fleet status" section of README.md for every fork in prateek/forks.
 
 Runs from the fleet-digest workflow. Reads per-fork state from the GitHub API
 (last run, latest release, open needs-human issues) and resolver spend from the
-durable sinks the sync writes it to (sync commit bodies and needs-human issue
-bodies). Best-effort: any field it cannot resolve renders as an em dash rather
-than failing the digest.
+sync commit bodies, rewrites the fenced fleet-status block in README.md, and
+commits it. Best-effort: any field it can't resolve renders as an em dash.
 """
 import json
 import os
@@ -15,9 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = os.environ["GITHUB_REPOSITORY"]
-TITLE = "\N{FORK AND KNIFE} fleet status"
 BOT = "github-actions[bot]"
 SPEND = re.compile(r"\$([0-9]+(?:\.[0-9]+)?)")
+README = Path("README.md")
+START = "<!-- fleet-status:start -->"
+END = "<!-- fleet-status:end -->"
 
 
 def gh(*args, check=False):
@@ -61,7 +62,7 @@ def latest_release(tool):
 def open_issues():
     return gh_json(
         "issue", "list", "--repo", REPO, "--state", "open", "--author", BOT,
-        "--limit", "200", "--json", "number,title,url,body",
+        "--limit", "200", "--json", "number,title,url",
         default=[],
     )
 
@@ -79,54 +80,53 @@ def row(tool, issues):
     run = last_run(tool)
     rel = latest_release(tool)
     mine = [i for i in issues if tool.lower() in i["title"].lower()]
-
-    if run:
-        state = run["conclusion"] or run["status"] or "—"
-        result = f"[{state}]({run['html_url']})"
-    else:
-        result = "—"
+    result = f"[{run['conclusion'] or run['status'] or '—'}]({run['html_url']})" if run else "—"
     release = f"[{rel['tag_name']}]({rel['html_url']})" if rel else "—"
     escal = " ".join(f"[#{i['number']}]({i['url']})" for i in mine) or "—"
     return f"| `{tool}` | {result} | {release} | {last_spend(tool)} | {escal} |"
 
 
-def build_body():
+def build_section():
     tools = forks()
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = ["## Fleet status", ""]
     if not tools:
-        return (
-            f"# {TITLE}\n\nNo forks in the fleet yet.\n\n"
-            f"_Updated {stamp} · run {os.environ.get('GITHUB_RUN_ID', '?')}._\n"
-        )
-    issues = open_issues()
-    lines = [
-        f"# {TITLE}",
-        "",
-        "| fork | last run | latest release | last spend | needs-human |",
-        "| --- | --- | --- | --- | --- |",
-        *(row(t, issues) for t in tools),
-        "",
-        f"_Updated {stamp} · run {os.environ.get('GITHUB_RUN_ID', '?')}._",
-    ]
-    return "\n".join(lines) + "\n"
+        lines += ["No forks in the fleet yet.", ""]
+    else:
+        issues = open_issues()
+        lines += [
+            "| fork | last run | latest release | last spend | needs-human |",
+            "| --- | --- | --- | --- | --- |",
+            *(row(t, issues) for t in tools),
+            "",
+        ]
+    lines.append(f"_Updated {stamp} · run {os.environ.get('GITHUB_RUN_ID', '?')}._")
+    return "\n".join(lines)
 
 
-def upsert(body):
-    existing = gh_json(
-        "issue", "list", "--repo", REPO, "--state", "open", "--author", BOT,
-        "--search", "in:title fleet status", "--json", "number,title", "--limit", "20",
-        default=[],
-    )
-    for i in existing:
-        if i["title"] == TITLE:
-            gh("issue", "edit", str(i["number"]), "--repo", REPO, "--body", body, check=True)
-            print(f"updated issue #{i['number']}")
-            return
-    out = gh("issue", "create", "--repo", REPO, "--title", TITLE, "--body", body, check=True)
-    num = out.strip().rstrip("/").split("/")[-1]
-    gh("issue", "pin", num, "--repo", REPO)  # best-effort; capped at 3 pins
-    print(f"created + pinned issue #{num}")
+def write_readme(section):
+    text = README.read_text()
+    block = f"{START}\n{section}\n{END}"
+    if START in text and END in text:
+        text = re.sub(re.escape(START) + r".*?" + re.escape(END), block, text, count=1, flags=re.S)
+    else:
+        text = text.rstrip() + f"\n\n{block}\n"
+    README.write_text(text)
+
+
+def commit():
+    subprocess.run(["git", "config", "user.name", "fleet-digest"], check=True)
+    subprocess.run(["git", "config", "user.email", "fleet-digest@invalid"], check=True)
+    subprocess.run(["git", "add", "README.md"], check=True)
+    if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode == 0:
+        print("fleet status unchanged")
+        return
+    subprocess.run(["git", "commit", "-q", "-m", "chore(fleet): update status"], check=True)
+    ref = os.environ.get("GITHUB_REF_NAME", "main")
+    subprocess.run(["git", "push", "--quiet", "origin", f"HEAD:{ref}"], check=True)
+    print("fleet status updated")
 
 
 if __name__ == "__main__":
-    upsert(build_body())
+    write_readme(build_section())
+    commit()

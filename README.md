@@ -9,3 +9,10 @@ brew install prateek/forks/<tool>-fork
 ```
 
 How it works and how to operate it: [AGENTS.md](AGENTS.md).
+
+<!-- fleet-status:start -->
+## Fleet status
+
+_not yet generated — the fleet-digest workflow upserts this table._
+<!-- fleet-status:end -->
+

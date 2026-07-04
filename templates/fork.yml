@@ -201,6 +201,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      actions: write   # dispatch fleet-digest after a release
     steps:
       - name: checkout monorepo
         uses: actions/checkout@v4
@@ -347,6 +348,12 @@ jobs:
           git commit -q -m "@TOOL@-fork ${version} (auto-built)"
           git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
           echo "tap updated: @PACKAGING_PATH@ -> ${version}"
+
+      - name: refresh fleet status
+        if: steps.publish.outputs.released == 'true' && github.server_url == 'https://github.com'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run fleet-digest.yml --repo "$GITHUB_REPOSITORY"
 
   lifecycle:
     needs: resolve
