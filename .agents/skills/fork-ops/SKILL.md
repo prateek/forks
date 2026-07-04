@@ -201,13 +201,22 @@ never in CI.
 
 ## Developing the engine and templates
 
-- Engine: `go -C engine test ./...` (txtar scenarios under `engine/testdata`).
+- Set the checkout up once: `mise trust && mise install`, then `mise run hooks`
+  to install the prek pre-commit hook. `mise.toml` pins go/python/ruff/actionlint/
+  shellcheck/prek so dev and CI share versions.
+- `mise run test` runs the engine suite (`go -C engine test ./...`, txtar
+  scenarios under `engine/testdata`). `mise run lint` runs every pre-commit hook
+  (gofmt, go vet, actionlint, shellcheck, ruff, whitespace). CI runs both.
 - Full loop against a real forge: `evals/forge-harness/harness` — `up`,
   `bootstrap`, `seed`, `engine`, `seed-conflict`, `down`, `clean`. It verifies
   the engine against Forgejo; the three-job CI shape is a real-GitHub property
   (see the harness header).
-- After editing `templates/fork.yml`, re-render with test values and run
-  `actionlint`.
+- After editing `templates/fork.yml`, re-render each rendered `<tool>.yml` and run
+  `mise run lint` (actionlint runs there). `templates/fork.yml` itself isn't valid
+  YAML until rendered, so the hooks skip it.
+- **Record what you learn.** When you resolve a build or sync failure, append the
+  durable lesson to `<tool>/learnings.md` (fork-specific) or the "Gotchas" below
+  (cross-fork), so the next sync and the resolver don't relearn it.
 
 ## Gotchas (learned from ghost-pepper)
 

@@ -20,6 +20,7 @@ templates/                    fork.yml / fork.toml / formula / cask templates
 <tool>/patches/*.patch        local patches, applied in manifest order
 <tool>/rerere/                recorded conflict resolutions, replayed on later syncs
 <tool>/src                    gitlink -> prateek/<upstream> @ assembled
+<tool>/learnings.md           durable fork-specific build/sync gotchas
 .github/workflows/<tool>.yml  one rendered workflow per fork
 Formula/  Casks/              the tap; <tool>-fork.rb points at release assets
 ```
@@ -41,6 +42,27 @@ and returns exactly one result: `no_op`, `synced`, `conflict`, or `retire`.
   listing the files to fix. Resolve them, `git add`, then `--resume`. Never commit
   inside the worktree; the engine finishes the merge or patch application itself.
   Resolutions are harvested into `rerere/` and replay on later syncs.
+
+## Local development
+
+`mise.toml` pins the toolchain (go, python, ruff, actionlint, shellcheck, prek).
+Set a checkout up once:
+
+```
+mise trust && mise install    # go/python/lint at pinned versions
+mise run hooks                # install the prek pre-commit hook
+```
+
+`mise run test` runs the engine suite; `mise run lint` runs every pre-commit hook
+(gofmt, go vet, actionlint, shellcheck, ruff, whitespace) over the tree. CI
+(`.github/workflows/ci.yml`) runs the same two. The macOS build job is the one
+non-hermetic edge: it carries no repo checkout, so it installs xcodegen via brew
+at build time rather than from mise.
+
+When you resolve a build or sync failure for a fork, append the durable lesson —
+fork-specific ones to `<tool>/learnings.md`, cross-fork ones to the `fork-ops`
+skill's "Gotchas". They exist so the next sync and the resolver don't relearn
+the same thing.
 
 ## Sources a fork can carry
 
