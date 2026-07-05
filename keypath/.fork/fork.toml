@@ -1,0 +1,27 @@
+# fork.toml - manifest of one fork in the prateek/forks monorepo.
+# The sync engine (../engine) reads [upstream], [prs], [branches], [patches];
+# `sha`, `track`, and remote-patch entries are engine-maintained. The rest is
+# read by setup/the workflow. Edit the hand-owned fields by hand.
+
+[upstream]
+repo = "malpern/KeyPath"
+branch = "master"
+sha = ""
+
+[prs]
+# No open upstream PRs — the only divergence is the local team-id + sign-only
+# patches under patches/, which never upstream, so this fork never auto-retires.
+track = []
+
+[build]
+command = "git submodule update --init External/kanata && SKIP_CODESIGN=1 SKIP_NOTARIZE=1 SKIP_SPARKLE=1 SKIP_SNAPSHOTS=1 SKIP_DEPLOY=1 ./build.sh"
+output = "dist/KeyPath.app"
+smoke = "test -d dist/KeyPath.app"
+
+[release]
+kind = "cask"
+tool = "keypath"
+
+# The monorepo is its own Homebrew tap; releases and the formula/cask live here.
+[tap]
+repo = "prateek/forks"

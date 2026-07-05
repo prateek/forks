@@ -1,0 +1,454 @@
+# keypath.yml - the KeyPath fork's workflow in the prateek/forks monorepo.
+# Rendered from templates/fork.yml, then extended with a `sign` job because
+# KeyPath needs a real Developer ID signature (its privileged helper registers
+# via SMAppService.register(), which fails -67028 when ad-hoc signed). Unlike
+# the ad-hoc forks the trust boundary is four jobs, not three:
+#   resolve  (hosted, Claude token only) — assemble + conflict-resolve.
+#   build    (@RUNS_ON@, ZERO secrets)   — runs upstream Rust+Swift build UNSIGNED.
+#   sign     (@RUNS_ON@, Developer ID)   — runs KeyPath's own signing on the opaque
+#            prebuilt bundle via `KEYPATH_SIGN_ONLY=1` (a local patch); it never runs
+#            the Rust/Swift build or any network build step, only codesign.
+#   publish  (hosted, GitHub App key)    — pushes assembled + releases the signed app.
+# Never pull_request-triggered (public repo + self-hosted runners).
+name: keypath
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '43 7 * * *'
+
+concurrency:
+  group: fork-keypath
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+      summary_b64: ${{ steps.result.outputs.summary_b64 }}
+      state_sha256: ${{ steps.pkg.outputs.state_sha256 }}
+    steps:
+      - name: checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+
+      - name: resolver gate
+        id: gate
+        env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OAUTH" ] || [ -n "$KEY" ]; then
+            echo "resolver=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "resolver=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: assemble
+        id: assemble
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          set -euo pipefail
+          go -C engine build -o "$RUNNER_TEMP/assemble" .
+          "$RUNNER_TEMP/assemble" --repo "$PWD/keypath"
+
+      - name: resolve conflicts with claude
+        id: resume
+        if: steps.assemble.outputs.result == 'conflict' && steps.gate.outputs.resolver == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code
+          prompt="keypath/.fork/work/.git/fork-conflict-prompt.md"
+          spend=0
+          for round in 1 2 3 4 5; do
+            echo "resolver round $round"
+            out="$(claude -p "$(cat "$prompt")" \
+              --model claude-sonnet-5 --output-format json \
+              --allowedTools "Bash(git add:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout:*),Read,Edit,Grep,Glob" \
+              --max-turns 40 2>/dev/null || true)"
+            cost="$(printf '%s' "$out" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read() or "{}").get("total_cost_usd") or 0)' 2>/dev/null || echo 0)"
+            spend="$(python3 -c 'import sys; print(round(float(sys.argv[1]) + float(sys.argv[2]), 4))' "$spend" "$cost" 2>/dev/null || echo "$spend")"
+            echo "resolver round $round: \$$cost (cumulative \$$spend)" >>"$GITHUB_STEP_SUMMARY"
+            git -C keypath/.fork/work diff --stat >>"$GITHUB_STEP_SUMMARY" || true
+            if r="$("$RUNNER_TEMP/assemble" --repo "$PWD/keypath" --resume 2>&1)"; then
+              printf '%s\n' "$r"
+              case "$r" in *result=conflict*) continue ;; *) break ;; esac
+            else
+              printf '%s\n' "$r"
+              echo "resolver declined or resume refused; escalating to a human"
+              break
+            fi
+          done
+          echo "resolver_spend_usd=$spend" >>"$GITHUB_OUTPUT"
+
+      - name: consolidate result
+        id: result
+        env:
+          FIRST: ${{ steps.assemble.outputs.result }}
+          FIRST_SUMMARY: ${{ steps.assemble.outputs.summary }}
+          SECOND: ${{ steps.resume.outputs.result }}
+          SECOND_SUMMARY: ${{ steps.resume.outputs.summary }}
+          SPEND: ${{ steps.resume.outputs.resolver_spend_usd }}
+        run: |
+          set -euo pipefail
+          result="${SECOND:-$FIRST}"
+          summary="${SECOND_SUMMARY:-$FIRST_SUMMARY}"
+          [ -n "${SPEND:-}" ] && summary="$summary"$'\n'"resolver spend: \$${SPEND}"
+          echo "result=$result" >>"$GITHUB_OUTPUT"
+          echo "summary_b64=$(printf '%s' "$summary" | base64 | tr -d '\n')" >>"$GITHUB_OUTPUT"
+
+      - name: package state for the build + sign + publish jobs
+        id: pkg
+        if: steps.result.outputs.result == 'synced' || steps.result.outputs.result == 'retire'
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/state.tgz" keypath
+          echo "state_sha256=$(shasum -a 256 "$RUNNER_TEMP/state.tgz" | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+
+      - name: upload assembled state
+        if: steps.result.outputs.result == 'synced' || steps.result.outputs.result == 'retire'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-keypath-state
+          path: ${{ runner.temp }}/state.tgz
+          retention-days: 1
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: [self-hosted, tartelet, homelab]
+    # KeyPath is heavier than the ad-hoc forks: a cold Rust (kanata) + Swift release
+    # build plus the Sparkle framework. Still a safety valve against a wedged host.
+    timeout-minutes: 60
+    # This job runs untrusted upstream BUILD/SMOKE; it must hold no token. It builds
+    # UNSIGNED (SKIP_CODESIGN=1) — the sign job applies the Developer ID afterward.
+    permissions: {}
+    steps:
+      - name: fetch assembled state
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-keypath-state
+          path: ${{ runner.temp }}
+      - name: ensure Rust toolchain (Swift/Xcode ship with the runner image)
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+          command -v cargo >/dev/null 2>&1 || \
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      - name: build UNSIGNED (runs upstream code; no secrets)
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+          cd keypath/.fork/work
+          git submodule update --init External/kanata && SKIP_CODESIGN=1 SKIP_NOTARIZE=1 SKIP_SPARKLE=1 SKIP_SNAPSHOTS=1 SKIP_DEPLOY=1 ./build.sh
+          test -d dist/KeyPath.app
+          # Archive the unsigned .app at the tarball root so the sign job / cask
+          # find KeyPath.app after extraction.
+          tar -czf "$RUNNER_TEMP/keypath-asset.tar.gz" -C "dist" "KeyPath.app"
+      - name: upload unsigned asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-keypath-asset-unsigned
+          path: ${{ runner.temp }}/keypath-asset.tar.gz
+          retention-days: 1
+
+  sign:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: [self-hosted, tartelet, homelab]
+    timeout-minutes: 30
+    # Holds the Developer ID cert. Runs KeyPath's OWN signing (build-and-sign.sh in
+    # KEYPATH_SIGN_ONLY mode) on the opaque prebuilt bundle — the inside-out codesign
+    # pass and the entitlements files only, never the Rust/Swift build or any network
+    # build step. Ephemeral Tart VM keeps it off the build VM; the keychain is scrubbed.
+    permissions: {}
+    steps:
+      - name: fetch assembled state
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-keypath-state
+          path: ${{ runner.temp }}
+      - name: fetch unsigned asset
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-keypath-asset-unsigned
+          path: ${{ runner.temp }}
+      - name: import Developer ID + sign (sign-only)
+        env:
+          CERT_P12: ${{ secrets.FORK_SIGN_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.FORK_SIGN_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:$PATH"
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+          cd keypath/.fork/work
+          # Drop the prebuilt UNSIGNED bundle where KEYPATH_SIGN_ONLY expects it.
+          mkdir -p dist
+          tar -xzf "$RUNNER_TEMP/keypath-asset.tar.gz" -C dist
+          test -d dist/KeyPath.app
+
+          # Import the Developer ID cert into a throwaway keychain (no runner
+          # login-keychain password needed). Same dance as ghostpepper's dropped
+          # sign job; find-identity runs without -v because a fresh keychain's trust
+          # domain reports the cert invalid even though codesign builds a valid chain.
+          kc="$RUNNER_TEMP/fork-sign.keychain-db"
+          kcpw="fork-${RANDOM}${RANDOM}${RANDOM}"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DevIDG2.cer"
+          security import "$RUNNER_TEMP/DevIDG2.cer" -k "$kc"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
+          # shellcheck disable=SC2046  # intentional split of the existing keychain list into args
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | sed 's/"//g')
+          identity="$(security find-identity -p codesigning "$kc" | awk '/Developer ID Application/{print $2; exit}')"
+          [ -n "$identity" ] || { echo "no Developer ID Application identity in the cert" >&2; exit 1; }
+
+          # KeyPath signs its bundle inside-out (helper, kanata, launcher, dylib,
+          # simulator, CLI, Insights, Sparkle, app) with per-component entitlements;
+          # reuse that logic rather than reimplement it. SKIP_NOTARIZE + SKIP_DEPLOY
+          # keep it non-interactive.
+          CODESIGN_IDENTITY="$identity" KEYPATH_SIGN_ONLY=1 SKIP_NOTARIZE=1 SKIP_DEPLOY=1 ./build.sh
+          codesign --verify --deep --strict --verbose=2 dist/KeyPath.app
+
+          tar -czf "$RUNNER_TEMP/keypath-asset.tar.gz" -C dist KeyPath.app
+
+          # Scrub the signing material from the ephemeral VM.
+          security delete-keychain "$kc" || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/DevIDG2.cer"
+      - name: upload signed asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-keypath-asset-signed
+          path: ${{ runner.temp }}/keypath-asset.tar.gz
+          retention-days: 1
+
+  publish:
+    needs: [resolve, build, sign]
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write   # dispatch fleet-digest after a release
+    steps:
+      - name: checkout monorepo
+        uses: actions/checkout@v4
+      - name: fetch assembled state
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-keypath-state
+          path: ${{ runner.temp }}
+      - name: fetch signed asset
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-keypath-asset-signed
+          path: ${{ runner.temp }}
+
+      # GitHub only: mint a contents token scoped to the upstream fork for the
+      # assembled-branch push.
+      - name: mint fork push token
+        if: github.server_url == 'https://github.com'
+        id: mint
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORK_APP_ID }}
+          private-key: ${{ secrets.FORK_APP_PRIVATE_KEY }}
+          owner: prateek
+          repositories: KeyPath
+          permission-contents: write
+
+      - name: publish
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORK_TOKEN: ${{ steps.mint.outputs.token }}
+          SUMMARY_B64: ${{ needs.resolve.outputs.summary_b64 }}
+          STATE_SHA256: ${{ needs.resolve.outputs.state_sha256 }}
+        run: |
+          set -euo pipefail
+          summary="$(printf '%s' "$SUMMARY_B64" | base64 -d)"
+
+          # Integrity gate: the state tar comes from resolve, but build (which
+          # runs untrusted code) shares the artifact backend. Verify against
+          # resolve's job output before trusting a byte of it.
+          got="$(shasum -a 256 "$RUNNER_TEMP/state.tgz" | cut -d' ' -f1)"
+          if [ "$got" != "$STATE_SHA256" ]; then
+            echo "state artifact sha mismatch: expected $STATE_SHA256, got $got" >&2
+            exit 1
+          fi
+
+          rm -rf keypath
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+
+          git config user.name fork-assemble
+          git config user.email fork-assemble@invalid
+
+          fork_hdr() {
+            if [ "$GITHUB_SERVER_URL" = "https://github.com" ]; then
+              printf 'Authorization: Basic %s' "$(printf 'x-access-token:%s' "$1" | base64 | tr -d '\n')"
+            else
+              printf 'Authorization: token %s' "$1"
+            fi
+          }
+
+          # Push the assembled commit to the upstream fork's `assembled` branch
+          # plus a permanent tag, then record it as the src gitlink.
+          work="keypath/.fork/work"
+          assembled="$(git -C "$work" rev-parse HEAD)"
+          tag="keypath-v$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          fork_url="${GITHUB_SERVER_URL}/prateek/KeyPath.git"
+          push_tok="${FORK_TOKEN:-$FORGE_TOKEN}"
+          git -C "$work" -c http.extraHeader="$(fork_hdr "$push_tok")" \
+            push --quiet --force "$fork_url" "HEAD:refs/heads/assembled"
+          git -C "$work" -c http.extraHeader="$(fork_hdr "$push_tok")" \
+            push --quiet --force "$fork_url" "HEAD:refs/tags/assembled-${tag}"
+          git update-index --add --cacheinfo 160000,"$assembled",keypath/src
+          git config -f .gitmodules submodule."keypath/src".path "keypath/src"
+          git config -f .gitmodules submodule."keypath/src".url "$fork_url"
+          git config -f .gitmodules submodule."keypath/src".branch assembled
+
+          git add .gitmodules keypath/.fork/fork.toml keypath/.fork/lock.json
+          [ -d keypath/patches ] && git add keypath/patches || true
+          [ -d keypath/rerere ] && git add keypath/rerere || true
+          if git diff --cached --quiet; then
+            echo "manifest unchanged; nothing to release"
+            echo "released=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "sync(keypath): $(printf '%s' "$summary" | head -1)" -m "$summary"
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+
+          asset="$RUNNER_TEMP/keypath-asset.tar.gz"
+          asset_name="$(basename "$asset")"
+          if [ "$GITHUB_SERVER_URL" = "https://github.com" ]; then
+            GH_TOKEN="$GITHUB_TOKEN" gh release create "$tag" --title "$tag" --notes "$summary" "$asset"
+          else
+            rid="$(jq -n --arg tag "$tag" --arg body "$summary" \
+              '{tag_name: $tag, name: $tag, body: $body, target_commitish: "'"${GITHUB_REF_NAME}"'"}' \
+              | curl -fsS -X POST -H "Authorization: token ${FORGE_TOKEN}" \
+                  -H "Content-Type: application/json" --data-binary @- \
+                  "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases" \
+              | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
+            curl -fsS -X POST -H "Authorization: token ${FORGE_TOKEN}" \
+              -F "attachment=@${asset};filename=${asset_name}" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/${rid}/assets?name=${asset_name}" >/dev/null
+          fi
+          {
+            echo "released=true"
+            echo "tag=$tag"
+            echo "asset=$asset"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: publish tap package
+        if: steps.publish.outputs.released == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.publish.outputs.tag }}
+          ASSET: ${{ steps.publish.outputs.asset }}
+        run: |
+          set -euo pipefail
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "$ASSET")"
+          sha="$(shasum -a 256 "$ASSET" | cut -d' ' -f1)"
+          version="${TAG#keypath-v}"
+          mkdir -p "$(dirname "Casks/keypath-fork.rb")"
+          sed -e "s|@URL@|$url|" -e "s|@SHA256@|$sha|" -e "s|@VERSION@|$version|" \
+            keypath/.fork/packaging.rb >"Casks/keypath-fork.rb"
+          git add "Casks/keypath-fork.rb"
+          if git diff --cached --quiet; then
+            echo "tap already current"
+            exit 0
+          fi
+          git commit -q -m "keypath-fork ${version} (auto-built)"
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          echo "tap updated: Casks/keypath-fork.rb -> ${version}"
+
+      - name: refresh fleet status
+        if: steps.publish.outputs.released == 'true' && github.server_url == 'https://github.com'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run fleet-digest.yml --repo "$GITHUB_REPOSITORY"
+
+  lifecycle:
+    needs: resolve
+    if: needs.resolve.outputs.result == 'conflict' || needs.resolve.outputs.result == 'retire'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+      actions: write
+    steps:
+      - name: checkout monorepo
+        if: needs.resolve.outputs.result == 'retire'
+        uses: actions/checkout@v4
+      - name: fetch assembled state
+        if: needs.resolve.outputs.result == 'retire'
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-keypath-state
+          path: ${{ runner.temp }}
+
+      - name: report conflict
+        if: needs.resolve.outputs.result == 'conflict'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          SUMMARY_B64: ${{ needs.resolve.outputs.summary_b64 }}
+        run: |
+          set -euo pipefail
+          summary="$(printf '%s' "$SUMMARY_B64" | base64 -d)"
+          tok="${FORGE_TOKEN:-$GITHUB_TOKEN}"
+          jq -n --arg body "$summary" \
+            '{title: "keypath sync conflict needs a human", body: $body}' \
+            | curl -fsS -X POST -H "Authorization: token ${tok}" \
+                -H "Content-Type: application/json" --data-binary @- \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues" >/dev/null
+          echo "conflict escalated as an issue"
+
+      - name: retire
+        if: needs.resolve.outputs.result == 'retire'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf keypath
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+          git config user.name fork-assemble
+          git config user.email fork-assemble@invalid
+          mkdir -p keypath/.fork
+          printf 'retired %s\n' "$(date -u +%FT%TZ)" >keypath/.fork/retired
+          git add keypath/.fork/retired keypath/.fork/fork.toml keypath/.fork/lock.json
+          git commit -q -m "retire(keypath): nothing left to carry"
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          tok="${FORGE_TOKEN:-$GITHUB_TOKEN}"
+          jq -n '{title: "keypath retired: remove prateek/forks/keypath-fork from packages.toml",
+                  body: "The local team-id + sign-only patches are gone, so nothing remains to carry. KeyPath has no official brew package to flip back to; just remove prateek/forks/keypath-fork from packages.toml with the fork-lifecycle skill in dotfiles."}' \
+            | curl -fsS -X POST -H "Authorization: token ${tok}" \
+                -H "Content-Type: application/json" --data-binary @- \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues" >/dev/null
+          if [ "$GITHUB_SERVER_URL" = "https://github.com" ]; then
+            GH_TOKEN="$GITHUB_TOKEN" gh workflow disable keypath.yml
+          fi
+          echo "retired keypath"
