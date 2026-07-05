@@ -2,3 +2,7 @@
 	path = ghostpepper/src
 	url = https://github.com/prateek/ghost-pepper.git
 	branch = assembled
+[submodule "keypath/src"]
+	path = keypath/src
+	url = https://github.com/prateek/KeyPath.git
+	branch = assembled
