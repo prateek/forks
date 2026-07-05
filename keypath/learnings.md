@@ -61,6 +61,16 @@ There are no tracked upstream PRs.
   build job timeout is 60m. Two heavy VMs on a 16 GB mini hit memory pressure (a local
   validation VM was reaped mid-run), so keep concurrency to one heavy build per host.
 
+## Publish / assembled branch
+
+- **Upstream ships `.github/workflows/`, the fork-automation app is contents-only.**
+  The first `publish` failed: GitHub rejects a push that creates/updates workflow
+  files from an app token without `workflows` permission. The app is deliberately
+  contents-only (ADR 0015), so `keypath.yml`'s publish strips `.github/workflows/`
+  from the assembled branch before pushing (it's also better not to run malpern's CI
+  on Prateek's fork). Any future fork whose upstream has workflow files needs the same
+  handling — a candidate for `templates/fork.yml` if a second one shows up.
+
 ## Post-install (user step, not the cask)
 
 SMAppService daemons land in `.requiresApproval`; the user approves the helper and the

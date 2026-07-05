@@ -315,6 +315,16 @@ jobs:
           # Push the assembled commit to the upstream fork's `assembled` branch
           # plus a permanent tag, then record it as the src gitlink.
           work="keypath/.fork/work"
+          # The fork-automation app is contents-only (no `workflows` permission), so
+          # GitHub rejects a push that creates/updates .github/workflows. KeyPath ships
+          # workflow files; drop them from the assembled branch before pushing (running
+          # upstream's CI on our fork is undesirable anyway). The build ran on the full
+          # tree, so this doesn't affect the release asset.
+          if [ -n "$(git -C "$work" ls-files .github/workflows)" ]; then
+            git -C "$work" rm -r -q .github/workflows
+            git -C "$work" -c user.name=fork-assemble -c user.email=fork-assemble@invalid \
+              commit -q -m "fork: drop upstream workflows from the assembled branch"
+          fi
           assembled="$(git -C "$work" rev-parse HEAD)"
           tag="keypath-v$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
           fork_url="${GITHUB_SERVER_URL}/prateek/KeyPath.git"
