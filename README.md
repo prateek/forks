@@ -16,6 +16,7 @@ How it works and how to operate it: [AGENTS.md](AGENTS.md).
 | fork | last run | latest release | last spend | needs-human |
 | --- | --- | --- | --- | --- |
 | `ghostpepper` | [success](https://github.com/prateek/forks/actions/runs/28699349564) | [ghostpepper-v20260704.7.1](https://github.com/prateek/forks/releases/tag/ghostpepper-v20260704.7.1) | — | — |
+| `keypath` | [success](https://github.com/prateek/forks/actions/runs/28725830106) | [keypath-v20260705.2.1](https://github.com/prateek/forks/releases/tag/keypath-v20260705.2.1) | — | — |
 
-_Updated 2026-07-04 09:10 UTC · run 28701521873._
+_Updated 2026-07-05 01:46 UTC · run 28726061014._
 <!-- fleet-status:end -->
