@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Prateek Rungta <prungta2@gmail.com>
+Date: Sat, 4 Jul 2026 20:16:54 -0400
+Subject: [PATCH 1/2] fork: run KeyPath under Prateek's Developer ID team
+ (2ZB5WTYXC6)
+
+Re-point the app<->helper mutual code-signing trust from upstream's team
+X2RKZ5TG99 to 2ZB5WTYXC6 so the bundle signs cleanly with Prateek's Developer ID.
+Team id 2ZB5WTYXC6 starts with a digit, so it is quoted in every compiled
+requirement string (Info.plist SMPrivilegedExecutables, the helper's DEBUG/RELEASE
+SecRequirement strings, the lint test); a bareword there is a hard syntax error.
+Local-only; never upstreamed.
+---
+ Scripts/sign-kanata.sh                                 | 2 +-
+ Sources/KeyPathApp/Info.plist                          | 2 +-
+ Sources/KeyPathHelper/main.swift                       | 6 +++---
+ Tests/KeyPathTests/Lint/HelperTrustContractTests.swift | 2 +-
+ 4 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/Scripts/sign-kanata.sh b/Scripts/sign-kanata.sh
+index 15a04ca..d5198a3 100755
+--- a/Scripts/sign-kanata.sh
++++ b/Scripts/sign-kanata.sh
+@@ -31,7 +31,7 @@ codesign -d -vvv "$KANATA_PATH" 2>&1 | grep -E "Signature|TeamIdentifier|Identif
+ 
+ # Sign with Developer ID
+ echo -e "\n${BLUE}Signing kanata with Developer ID...${NC}"
+-SIGNING_IDENTITY="Developer ID Application: Micah Alpern (X2RKZ5TG99)"
++SIGNING_IDENTITY="Developer ID Application: Pratik Rungta (2ZB5WTYXC6)"
+ 
+ # Remove any existing signature
+ echo "Removing existing signature..."
+diff --git a/Sources/KeyPathApp/Info.plist b/Sources/KeyPathApp/Info.plist
+index 9c3b0d1..208a5ae 100644
+--- a/Sources/KeyPathApp/Info.plist
++++ b/Sources/KeyPathApp/Info.plist
+@@ -31,7 +31,7 @@
+ 	<key>SMPrivilegedExecutables</key>
+ 	<dict>
+ 		<key>com.keypath.helper</key>
+-		<string>identifier "com.keypath.helper" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = X2RKZ5TG99</string>
++		<string>identifier "com.keypath.helper" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "2ZB5WTYXC6"</string>
+ 	</dict>
+ 
+ 	<!-- URL Scheme: Register keypath:// for deep linking -->
+diff --git a/Sources/KeyPathHelper/main.swift b/Sources/KeyPathHelper/main.swift
+index db6323d..651f65e 100644
+--- a/Sources/KeyPathHelper/main.swift
++++ b/Sources/KeyPathHelper/main.swift
+@@ -74,7 +74,7 @@ func validateConnection(_ connection: NSXPCConnection, requirement requirementSt
+             let teamID = info[kSecCodeInfoTeamIdentifier as String] as? String ?? "unknown"
+             NSLog("[KeyPathHelper] Code signature validation failed for PID \(pid): \(status)")
+             NSLog("[KeyPathHelper]   → Connecting process: identifier=\(identifier), team=\(teamID)")
+-            NSLog("[KeyPathHelper]   → Expected: identifier=\"com.keypath.KeyPath\" or \"com.keypath.KeyPath.CLI\", team=\"X2RKZ5TG99\"")
++            NSLog("[KeyPathHelper]   → Expected: identifier=\"com.keypath.KeyPath\" or \"com.keypath.KeyPath.CLI\", team=\"2ZB5WTYXC6\"")
+             NSLog("[KeyPathHelper]   → This likely means app was updated but not restarted")
+             logger.error(
+                 """
+@@ -106,10 +106,10 @@ class HelperDelegate: NSObject, NSXPCListenerDelegate {
+         // - RELEASE: require the exact app or bundled CLI identifier for strict production security
+         #if DEBUG
+             let requirementString =
+-                "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = X2RKZ5TG99"
++                "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"2ZB5WTYXC6\""
+         #else
+             // swiftlint:disable:next line_length
+-            let requirementString = "(identifier \"com.keypath.KeyPath\" or identifier \"com.keypath.KeyPath.CLI\") and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = X2RKZ5TG99"
++            let requirementString = "(identifier \"com.keypath.KeyPath\" or identifier \"com.keypath.KeyPath.CLI\") and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"2ZB5WTYXC6\""
+         #endif
+ 
+         // Validate the caller's code signature using audit token
+diff --git a/Tests/KeyPathTests/Lint/HelperTrustContractTests.swift b/Tests/KeyPathTests/Lint/HelperTrustContractTests.swift
+index f8a05f2..6c33c08 100644
+--- a/Tests/KeyPathTests/Lint/HelperTrustContractTests.swift
++++ b/Tests/KeyPathTests/Lint/HelperTrustContractTests.swift
+@@ -40,7 +40,7 @@ final class HelperTrustContractTests: XCTestCase {
+ 
+     func testHelperReleaseTrustRequirementParses() {
+         let releaseRequirement =
+-            #"(identifier "com.keypath.KeyPath" or identifier "com.keypath.KeyPath.CLI") and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = X2RKZ5TG99"#
++            #"(identifier "com.keypath.KeyPath" or identifier "com.keypath.KeyPath.CLI") and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "2ZB5WTYXC6""#
+ 
+         var requirement: SecRequirement?
+         let status = SecRequirementCreateWithString(releaseRequirement as CFString, [], &requirement)
+-- 
+2.55.0
+
