@@ -6,7 +6,7 @@
 [upstream]
 repo = "malpern/KeyPath"
 branch = "master"
-sha = "5cb24ba62e19be5a4583acb0b4be47f6e70fde02"
+sha = "5e1268abc96518417dbcad41299699463e97b2a8"
 
 [prs]
 # No open upstream PRs — the only divergence is the local team-id + sign-only
