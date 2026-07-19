@@ -1,14 +1,14 @@
 # Packaging template for an app fork. Setup fills ghostpepper/GhostPepper/
 # prateek/forks and commits this as .fork/packaging.rb; fork.yml fills
-# https://github.com/prateek/forks/releases/download/ghostpepper-v20260707.16.1/ghostpepper-asset.tar.gz/a75be23db4200ef65ff1cc9b9901da6970518ee489d294e81b954bdb429160ca/20260707.16.1 from each release and pushes the result to the
+# https://github.com/prateek/forks/releases/download/ghostpepper-v20260719.28.1/ghostpepper-asset.tar.gz/cc137dfbe9c76b09871b9b95c58ba51c517f74e1b854398a79b0358c6c8bc2cf/20260719.28.1 from each release and pushes the result to the
 # tap. Fork app builds are ad-hoc signed, so the cask strips quarantine in a
 # postflight (Gatekeeper only blocks quarantined apps). It runs on every
 # install/upgrade/reinstall, so plain `brew upgrade` keeps the fork launchable.
 cask "ghostpepper-fork" do
-  version "20260707.16.1"
-  sha256 "a75be23db4200ef65ff1cc9b9901da6970518ee489d294e81b954bdb429160ca"
+  version "20260719.28.1"
+  sha256 "cc137dfbe9c76b09871b9b95c58ba51c517f74e1b854398a79b0358c6c8bc2cf"
 
-  url "https://github.com/prateek/forks/releases/download/ghostpepper-v20260707.16.1/ghostpepper-asset.tar.gz"
+  url "https://github.com/prateek/forks/releases/download/ghostpepper-v20260719.28.1/ghostpepper-asset.tar.gz"
   name "GhostPepper (fork build)"
   desc "Downstream fork build of GhostPepper (auto-built by prateek/forks)"
   homepage "https://github.com/prateek/forks"
