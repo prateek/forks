@@ -15,8 +15,8 @@ How it works and how to operate it: [AGENTS.md](AGENTS.md).
 
 | fork | last run | latest release | last spend | needs-human |
 | --- | --- | --- | --- | --- |
-| `ghostpepper` | [success](https://github.com/prateek/forks/actions/runs/29635378090) | [ghostpepper-v20260707.16.1](https://github.com/prateek/forks/releases/tag/ghostpepper-v20260707.16.1) | — | [#10](https://github.com/prateek/forks/issues/10) [#8](https://github.com/prateek/forks/issues/8) |
+| `ghostpepper` | [success](https://github.com/prateek/forks/actions/runs/29678148173) | [ghostpepper-v20260719.28.1](https://github.com/prateek/forks/releases/tag/ghostpepper-v20260719.28.1) | $1.6619 | [#10](https://github.com/prateek/forks/issues/10) [#8](https://github.com/prateek/forks/issues/8) |
 | `keypath` | [failure](https://github.com/prateek/forks/actions/runs/29637334669) | [keypath-v20260706.4.1](https://github.com/prateek/forks/releases/tag/keypath-v20260706.4.1) | — | [#9](https://github.com/prateek/forks/issues/9) [#7](https://github.com/prateek/forks/issues/7) [#6](https://github.com/prateek/forks/issues/6) [#5](https://github.com/prateek/forks/issues/5) [#4](https://github.com/prateek/forks/issues/4) [#3](https://github.com/prateek/forks/issues/3) |
 
-_Updated 2026-07-18 08:58 UTC · run 29638361199._
+_Updated 2026-07-19 07:37 UTC · run 29678424564._
 <!-- fleet-status:end -->
