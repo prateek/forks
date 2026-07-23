@@ -6,7 +6,7 @@
 [upstream]
 repo = "matthartman/ghost-pepper"
 branch = "main"
-sha = "656566f94943b9f2529faeb45242ca4f7b50aa8b"
+sha = "ef77ea03d45c884d3da5651039da63fc4f733341"
 
 [prs]
 # Prateek's open upstream PRs, merged in list order. Auto-dropped on
