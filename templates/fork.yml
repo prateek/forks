@@ -5,8 +5,9 @@
 #   @UPSTREAM_FORK_OWNER@ / @UPSTREAM_FORK_NAME@
 #                    owner and repo of the plain upstream fork (holds
 #                    `assembled`); e.g. prateek and ghost-pepper
-#   @RUNS_ON@        build-job runner: a label list for Tartelet minis, e.g.
-#                    [self-hosted, tartelet, homelab], or macos-latest
+#   @RUNS_ON@        build-job runner: a standard GitHub-hosted label, e.g.
+#                    macos-26 or ubuntu-latest (free on a public repo);
+#                    never a paid larger runner
 #   @CRON@           randomized daily cron minute, off :00/:30
 #   @BUILD_COMMAND@ / @SMOKE_COMMAND@ / @BUILD_OUTPUT@   run in the assembled tree
 #   @KIND@           formula | cask
@@ -18,7 +19,7 @@
 # BUILD/SMOKE with ZERO secrets and read-only contents; `publish` holds the
 # GitHub App key and runs only our shell, taking git/manifest state from
 # `resolve` and treating the `build` asset as an opaque payload. Never
-# pull_request-triggered (public repo + self-hosted runners). GitHub-only steps
+# pull_request-triggered (public repo; publish holds push credentials). GitHub-only steps
 # gate on the server URL so the same file runs on the local Forgejo harness.
 name: @TOOL@
 on:
@@ -159,8 +160,8 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.result == 'synced'
     runs-on: @RUNS_ON@
-    # Safety valve: reap a runaway build before it can thrash a self-hosted host
-    # into a freeze. A cold macOS app build fits comfortably under this.
+    # Safety valve: reap a runaway build. A cold macOS app build fits comfortably
+    # under this.
     timeout-minutes: 40
     # This job runs untrusted upstream BUILD/SMOKE; it must hold no token.
     # download-artifact authenticates with ACTIONS_RUNTIME_TOKEN, not

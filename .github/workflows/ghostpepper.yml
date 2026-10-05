@@ -5,8 +5,8 @@
 #   prateek / ghost-pepper
 #                    owner and repo of the plain upstream fork (holds
 #                    `assembled`); e.g. prateek and ghost-pepper
-#   [self-hosted, tartelet, homelab]        build-job runner: a label list for Tartelet minis, e.g.
-#                    [self-hosted, tartelet, homelab], or macos-latest
+#   macos-26         build-job runner: a standard GitHub-hosted label (free on a
+#                    public repo); never a paid larger runner
 #   37 6 * * *           randomized daily cron minute, off :00/:30
 #   cp GhostPepper/Secrets.example GhostPepper/Secrets.swift; command -v xcodegen >/dev/null 2>&1 || brew install xcodegen; xcodegen generate; nice -n 10 xcodebuild -project GhostPepper.xcodeproj -scheme GhostPepper -configuration Release -derivedDataPath build/derived -skipMacroValidation -jobs 4 CODE_SIGNING_ALLOWED=NO build / test -d build/derived/Build/Products/Release/GhostPepper.app / build/derived/Build/Products/Release/GhostPepper.app   run in the assembled tree
 #   cask           formula | cask
@@ -18,7 +18,7 @@
 # BUILD/SMOKE with ZERO secrets and read-only contents; `publish` holds the
 # GitHub App key and runs only our shell, taking git/manifest state from
 # `resolve` and treating the `build` asset as an opaque payload. Never
-# pull_request-triggered (public repo + self-hosted runners). GitHub-only steps
+# pull_request-triggered (public repo; publish holds push credentials). GitHub-only steps
 # gate on the server URL so the same file runs on the local Forgejo harness.
 name: ghostpepper
 on:
@@ -158,9 +158,9 @@ jobs:
   build:
     needs: resolve
     if: needs.resolve.outputs.result == 'synced'
-    runs-on: [self-hosted, tartelet, homelab]
-    # Safety valve: reap a runaway build before it can thrash a self-hosted host
-    # into a freeze. A cold macOS app build fits comfortably under this.
+    runs-on: macos-26
+    # Safety valve: reap a runaway build. A cold macOS app build fits comfortably
+    # under this.
     timeout-minutes: 40
     # This job runs untrusted upstream BUILD/SMOKE; it must hold no token.
     # download-artifact authenticates with ACTIONS_RUNTIME_TOKEN, not

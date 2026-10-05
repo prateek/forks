@@ -36,8 +36,9 @@ dotfiles.
    (cask). `@URL@`, `@SHA256@`, `@VERSION@` are release-time — CI fills them per
    release; leave them alone. `CRON` must be a randomized daily minute off `:00`
    and `:30`, unique per fork, so the whole fleet doesn't wake at once. `RUNS_ON`
-   is the Tartelet label list `[self-hosted, tartelet, homelab]` for macOS app
-   builds, or `macos-latest` / `ubuntu-latest` as a fallback. After rendering,
+   is a standard GitHub-hosted label: `macos-26` for macOS app builds,
+   `ubuntu-latest` otherwise. Standard hosted runners are free while this repo
+   is public; never use a paid larger runner (`-large`, `-xlarge`). After rendering,
    grep the outputs for surviving `@NAME@` placeholders and fail loudly if any
    remain.
 
@@ -162,7 +163,7 @@ After the dotfiles `packages.toml` PR merges (via the `fork-lifecycle` skill) an
 
 ## Credentials
 
-CI never talks to 1Password. Two apps, one vault, three GitHub secrets.
+CI never talks to 1Password. One app, one vault, three GitHub secrets.
 
 - **App `prateek-fork-automation`** — Contents: read and write, nothing else.
   Installed **only** on each `prateek/<upstream-fork>`, never on this repo,
@@ -171,9 +172,6 @@ CI never talks to 1Password. Two apps, one vault, three GitHub secrets.
   Add a new fork to the installation:
   `gh api -X PUT /user/installations/<installation-id>/repositories/<repo-id>`
   or the Settings → Applications → Configure UI (one click).
-- **App for Tartelet runner registration** — separate app, credentials live only
-  in the mini's keychain; no workflow references them. `prateek/forks` must be in
-  its installation so the minis can register as runners.
 - **Vault `gh-prateek-fork-automation`** holds the GitHub App credentials and
   the Claude OAuth token (from `claude setup-token`). `sync-fork-secrets` pins
   its `op://` refs to vault/item/field **UUIDs** so a rename in 1Password can't
@@ -227,7 +225,7 @@ never in CI.
 - **Diagnose creds without Xcode:** an ES256 JWT (App Store Connect API key)
   against `/v1/apps` or `/notary/v2/submissions` tells you if the creds are valid
   vs. the environment (clock, stale secret) is the problem.
-- **App build quirks surface only on the real mini build:** a gitignored
+- **App build quirks surface only on the real CI build:** a gitignored
   `Secrets.swift` (copy the committed `Secrets.example` first); `@testable` tests
   need a Debug build; the release asset needs the `.app` at the tarball **root**
   (`tar -C "$(dirname OUT)" "$(basename OUT)"`). Prefer a build-succeeded smoke
@@ -238,9 +236,9 @@ never in CI.
   with "No url found for submodule path"; `publish` writes it.
 - **`publish` pushes to `main`,** so a local clone goes stale after every run —
   `git fetch && git rebase origin/main` before pushing more changes.
-- **Heavy Xcode builds can wedge a mini** (OOM → SSH + runner heartbeat die); the
-  build is `nice`d, `-jobs`-bounded, build-only-smoke, and short-timeout to avoid
-  it. A networked smart plug / autoping PDU makes a headless mini self-recover.
+- **A green run does not prove a build.** `resolve` returning `no_op` or
+  `conflict` skips `build` and `publish`, and the run still ends green. Check the
+  job conclusions (`gh run view <id> --json jobs`) and the release list.
 - **The lint hooks need structural exclusions.** `templates/*.yml` isn't valid
   YAML — an `@VAR@` scalar starts with `@`, a YAML-reserved indicator — so
   check-yaml and actionlint skip `templates/`; render first, then lint. `patches/`

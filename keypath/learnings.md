@@ -45,7 +45,7 @@ There are no tracked upstream PRs.
   lib/signing.sh + the entitlements files) with the cert present — only the codesign
   pass, never the Rust/Swift build. This is a narrower boundary than the ad-hoc forks
   ("no upstream code with secrets"); accepted for a personal daily-driver fork, contained
-  by the ephemeral Tart VM + keychain scrub.
+  by a separate ephemeral hosted runner + keychain scrub.
 
 ## Build
 

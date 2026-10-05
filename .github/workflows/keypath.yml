@@ -4,12 +4,12 @@
 # via SMAppService.register(), which fails -67028 when ad-hoc signed). Unlike
 # the ad-hoc forks the trust boundary is four jobs, not three:
 #   resolve  (hosted, Claude token only) — assemble + conflict-resolve.
-#   build    (@RUNS_ON@, ZERO secrets)   — runs upstream Rust+Swift build UNSIGNED.
-#   sign     (@RUNS_ON@, Developer ID)   — runs KeyPath's own signing on the opaque
+#   build    (hosted macOS, ZERO secrets) — runs upstream Rust+Swift build UNSIGNED.
+#   sign     (hosted macOS, Developer ID) — runs KeyPath's own signing on the opaque
 #            prebuilt bundle via `KEYPATH_SIGN_ONLY=1` (a local patch); it never runs
 #            the Rust/Swift build or any network build step, only codesign.
 #   publish  (hosted, GitHub App key)    — pushes assembled + releases the signed app.
-# Never pull_request-triggered (public repo + self-hosted runners).
+# Never pull_request-triggered (public repo; the jobs hold signing and push credentials).
 name: keypath
 on:
   workflow_dispatch:
@@ -132,9 +132,9 @@ jobs:
   build:
     needs: resolve
     if: needs.resolve.outputs.result == 'synced'
-    runs-on: [self-hosted, tartelet, homelab]
+    runs-on: macos-26
     # KeyPath is heavier than the ad-hoc forks: a cold Rust (kanata) + Swift release
-    # build plus the Sparkle framework. Still a safety valve against a wedged host.
+    # build plus the Sparkle framework. The timeout bounds a hung build.
     timeout-minutes: 60
     # This job runs untrusted upstream BUILD/SMOKE; it must hold no token. It builds
     # UNSIGNED (SKIP_CODESIGN=1) — the sign job applies the Developer ID afterward.
@@ -145,7 +145,7 @@ jobs:
         with:
           name: fork-keypath-state
           path: ${{ runner.temp }}
-      - name: ensure Rust toolchain (Swift/Xcode ship with the runner image)
+      - name: ensure Rust toolchain
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
@@ -172,12 +172,13 @@ jobs:
   sign:
     needs: [resolve, build]
     if: needs.resolve.outputs.result == 'synced'
-    runs-on: [self-hosted, tartelet, homelab]
+    runs-on: macos-26
     timeout-minutes: 30
     # Holds the Developer ID cert. Runs KeyPath's OWN signing (build-and-sign.sh in
     # KEYPATH_SIGN_ONLY mode) on the opaque prebuilt bundle — the inside-out codesign
     # pass and the entitlements files only, never the Rust/Swift build or any network
-    # build step. Ephemeral Tart VM keeps it off the build VM; the keychain is scrubbed.
+    # build step. A separate ephemeral hosted runner keeps it off the build machine; the
+    # keychain is scrubbed.
     permissions: {}
     steps:
       - name: fetch assembled state
@@ -232,7 +233,7 @@ jobs:
 
           tar -czf "$RUNNER_TEMP/keypath-asset.tar.gz" -C dist KeyPath.app
 
-          # Scrub the signing material from the ephemeral VM.
+          # Scrub the signing material from the runner.
           security delete-keychain "$kc" || true
           rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/DevIDG2.cer"
       - name: upload signed asset

@@ -92,7 +92,7 @@ never shares a runner with credentials:
 1. `resolve` (hosted ubuntu, `CLAUDE_CODE_OAUTH_TOKEN` only, read-only token) —
    assemble; on conflict, run `claude-sonnet-5` resume rounds under a narrow git
    allowlist. Exits `no_op` fast when nothing changed. Emits the state sha.
-2. `build` (Tartelet mini for macOS forks, hosted otherwise; **no secrets**,
+2. `build` (hosted `macos-26` for macOS forks, hosted ubuntu otherwise; **no secrets**,
    `permissions: {}`) — run BUILD + SMOKE on the assembled tree, and ad-hoc-sign
    app casks (`codesign --force --deep --sign -`). Upstream code executes only
    here. Forks are ad-hoc signed, not notarized; the cask strips quarantine in a
