@@ -1,9 +1,0 @@
-{
-  "upstream_sha": "5e1268abc96518417dbcad41299699463e97b2a8",
-  "assembled_head": "458059e163a0d81be4c6c5ed2f23cdce543e075a",
-  "pr_heads": {},
-  "patches": {
-    "0001-fork-run-KeyPath-under-Prateek-s-Developer-ID-team-2.patch": "6eed884c2e3e64d2c5130c1efcd1f31889259dc474b9b8cf14a4d1d664aecf10",
-    "0002-fork-add-KEYPATH_SIGN_ONLY-mode-to-build-and-sign.sh.patch": "f5c471648ca2859034b1d6ce91df3d24d51c1eae33239a6e7f6cca24d31e47da"
-  }
-}

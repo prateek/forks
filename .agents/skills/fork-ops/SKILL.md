@@ -239,6 +239,14 @@ never in CI.
 - **A green run does not prove a build.** `resolve` returning `no_op` or
   `conflict` skips `build` and `publish`, and the run still ends green. Check the
   job conclusions (`gh run view <id> --json jobs`) and the release list.
+- **A local patch against a file upstream keeps rewriting is a standing cost.**
+  keypath's sign-only patch stopped applying after an upstream refactor; the CI
+  resolver then produced a different merge every day at $1-2 a run, some of
+  which did not build. Rewrite the patch against current upstream by hand, or
+  retire the fork as keypath was (2026-10).
+- **Check which Xcode upstream pins before picking the runner.** `macos-26`
+  carries Xcode 26.x only. Newer toolchains ship first on a dedicated
+  standard-size image label such as `xcode-27`.
 - **The lint hooks need structural exclusions.** `templates/*.yml` isn't valid
   YAML — an `@VAR@` scalar starts with `@`, a YAML-reserved indicator — so
   check-yaml and actionlint skip `templates/`; render first, then lint. `patches/`

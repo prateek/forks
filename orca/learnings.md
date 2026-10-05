@@ -54,7 +54,10 @@ demands a newer mobile app; the fix there is a fresh fork build.
 
 ## Publish
 
-- Upstream ships dozens of workflow files; publish strips `.github/workflows`
-  from `assembled` for the same reason as keypath (contents-only app token).
+- Upstream ships dozens of workflow files, and the fork-automation app is
+  contents-only: GitHub rejects a push that creates or updates workflow files
+  from a token without the `workflows` permission. Publish strips
+  `.github/workflows` from `assembled` before pushing, which also keeps
+  upstream's CI from running on the fork.
 - The release carries no asset. It records which assembled commit became which
   TestFlight version and build.
