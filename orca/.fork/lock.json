@@ -1,10 +1,10 @@
 {
   "upstream_sha": "d17351401d7372f3f48cc3cdb423147d8c8e61c1",
-  "assembled_head": "e8783260ab92b61d915c27b5810848d938eb74d9",
+  "assembled_head": "58ad0f95a0babdb5f551c40218e2b6a7c60591e4",
   "pr_heads": {},
   "patches": {
     "0001-fork-ship-the-iOS-app-under-Prateek-s-bundle-id-as-O.patch": "6d46a148fd10b50b53d121c9491d9406de79dc9581cd42f8f26335f24c8de77f",
-    "0002-fork-turn-off-iOS-remote-push-registration.patch": "b96bf6986bdd31eb182404fd23250fdbefe8bbd88eacba9d1e8ca15dda4e427a",
+    "0002-fork-turn-off-iOS-remote-push-registration.patch": "bc2f2682de49e10f2e4095471a1361e1e1d0db9bd7022d07ad7069fd335e4c97",
     "0003-fork-stop-the-iOS-build-prompting-for-upstream-s-App.patch": "6777f21b468345a2af05948ef5144a38f182f343238bbf102a5bd7d614feea79"
   }
 }

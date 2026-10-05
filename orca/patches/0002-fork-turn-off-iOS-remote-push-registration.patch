@@ -5,18 +5,18 @@ Subject: [PATCH 2/3] fork: turn off iOS remote push registration
 
 Upstream's push gateway holds upstream's APNs credentials, so a device token
 from this bundle id is undeliverable there, and hosting a second gateway is out
-of scope. No aps-environment entitlement, and no iOS token ever leaves the app.
-Local-only; never upstreamed.
+of scope. The aps-environment entitlement is deleted after expo-notifications
+writes it, and no iOS token ever leaves the app. Local-only; never upstreamed.
 ---
- mobile/app.config.js                   | 35 +++++---------------------
- mobile/src/notifications/push-token.ts |  7 +++++-
- 2 files changed, 12 insertions(+), 30 deletions(-)
+ mobile/app.config.js                   | 45 ++++++++++----------------
+ mobile/src/notifications/push-token.ts |  7 +++-
+ 2 files changed, 23 insertions(+), 29 deletions(-)
 
 diff --git a/mobile/app.config.js b/mobile/app.config.js
-index e4bb110089..8bf64846fe 100644
+index e4bb110089..7b24ea7271 100644
 --- a/mobile/app.config.js
 +++ b/mobile/app.config.js
-@@ -1,32 +1,9 @@
+@@ -1,32 +1,21 @@
 -// Why this file exists: a bare "expo-notifications" plugin entry writes
 -// `aps-environment: development` into the iOS entitlements, while push-token.ts
 -// reports `production` for every non-__DEV__ build. A TestFlight or App Store build
@@ -29,12 +29,23 @@ index e4bb110089..8bf64846fe 100644
 -// this function, so the fastlane version/buildNumber rewrite still flows through.
 -const APS_ENVIRONMENT =
 -  process.env.ORCA_IOS_APS_ENVIRONMENT === 'production' ? 'production' : 'development'
--
 +// Fork build: remote push is off. Upstream's push gateway signs for upstream's Apple
 +// team and APNs topic, so a token from this bundle id could never be delivered to.
-+// Dropping the expo-notifications config plugin keeps `aps-environment` out of the
-+// entitlements, which also keeps the App Store profile free of the Push capability.
-+// The module itself stays linked: local notifications need no entitlement.
++// The entitlement has to be deleted, not merely left unset: Expo applies the
++// expo-notifications config plugin to any project that has the package installed,
++// and that plugin writes `aps-environment`. An entitlement the App Store profile
++// lacks fails signing. The module itself stays linked: local notifications need no
++// entitlement.
++const { withEntitlementsPlist } = require('expo/config-plugins')
+ 
++const withoutRemotePush = (config) =>
++  withEntitlementsPlist(config, (mod) => {
++    delete mod.modResults['aps-environment']
++    return mod
++  })
++
++// First in the list on purpose: mods run in reverse order of registration, so this
++// one sees the entitlements after expo-notifications has written to them.
  module.exports = ({ config }) => ({
    ...config,
 -  ios: {
@@ -53,7 +64,7 @@ index e4bb110089..8bf64846fe 100644
 -        ]
 -      : plugin
 -  )
-+  plugins: (config.plugins ?? []).filter((plugin) => plugin !== 'expo-notifications')
++  plugins: [withoutRemotePush, ...(config.plugins ?? [])]
  })
 diff --git a/mobile/src/notifications/push-token.ts b/mobile/src/notifications/push-token.ts
 index 6c93bfb150..6b0969e23d 100644

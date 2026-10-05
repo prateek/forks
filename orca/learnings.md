@@ -21,9 +21,12 @@ app is built; desktop and Android are untouched.
   scheme `Orca` and `Orca.app`.
 - `0002` — iOS remote push off. Upstream's push gateway holds upstream's APNs
   credentials, so a token from this bundle id is undeliverable. `app.config.js`
-  drops the `expo-notifications` config plugin so no `aps-environment`
-  entitlement is generated (an entitlement the profile lacks fails signing), and
-  `push-token.ts` returns no iOS token so nothing registers with a host.
+  deletes the `aps-environment` entitlement (an entitlement the profile lacks
+  fails signing), and `push-token.ts` returns no iOS token so nothing registers
+  with a host. Removing `expo-notifications` from `plugins` is not enough: Expo
+  applies that plugin to any project with the package installed. The deleting
+  plugin must be first in the list, because mods run in reverse registration
+  order. Check with `npx expo config --type introspect | grep -A2 entitlements`.
 - `0003` — the iOS update check is off. It reads upstream's App Store listing,
   which says nothing about a TestFlight install under another bundle id.
 
