@@ -304,7 +304,12 @@ jobs:
           git commit -m "sync(@TOOL@): $(printf '%s' "$summary" | head -1)" -m "$summary"
           # origin auth is the token actions/checkout persisted; default-token
           # pushes do not retrigger workflows.
-          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          # main moves under a run (another fork's publish, fleet-digest, a human);
+          # these commits touch only this fork's paths, so a rebase is always clean.
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}" || {
+            git pull --quiet --rebase origin "${GITHUB_REF_NAME}"
+            git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          }
 
           asset="$RUNNER_TEMP/@TOOL@-asset.tar.gz"
           asset_name="$(basename "$asset")"
@@ -347,7 +352,12 @@ jobs:
             exit 0
           fi
           git commit -q -m "@TOOL@-fork ${version} (auto-built)"
-          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          # main moves under a run (another fork's publish, fleet-digest, a human);
+          # these commits touch only this fork's paths, so a rebase is always clean.
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}" || {
+            git pull --quiet --rebase origin "${GITHUB_REF_NAME}"
+            git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          }
           echo "tap updated: @PACKAGING_PATH@ -> ${version}"
 
       - name: refresh fleet status
@@ -409,7 +419,12 @@ jobs:
           git add @TOOL@/.fork/retired @TOOL@/.fork/fork.toml @TOOL@/.fork/lock.json
           git commit -q -m "retire(@TOOL@): nothing left to carry"
           # origin auth is the token actions/checkout persisted.
-          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          # main moves under a run (another fork's publish, fleet-digest, a human);
+          # these commits touch only this fork's paths, so a rebase is always clean.
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}" || {
+            git pull --quiet --rebase origin "${GITHUB_REF_NAME}"
+            git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          }
           tok="${FORGE_TOKEN:-$GITHUB_TOKEN}"
           jq -n '{title: "@TOOL@ retired: flip packages.toml back to @REPLACES@",
                   body: "All tracked PRs merged/closed, no tracked branches, and no patches remain. Run the fork-lifecycle skill in dotfiles to remove prateek/forks/@TOOL@-fork from packages.toml."}' \

@@ -453,7 +453,12 @@ jobs:
             exit 0
           fi
           git commit -m "sync(orca): $(printf '%s' "$summary" | head -1)" -m "$summary"
-          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          # main moves under a run (another fork's publish, fleet-digest, a human);
+          # these commits touch only this fork's paths, so a rebase is always clean.
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}" || {
+            git pull --quiet --rebase origin "${GITHUB_REF_NAME}"
+            git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          }
 
           # The binary lives in TestFlight, so the release carries no asset. It is the
           # public record of which assembled commit became which TestFlight build.
@@ -520,7 +525,12 @@ jobs:
           printf 'retired %s\n' "$(date -u +%FT%TZ)" >orca/.fork/retired
           git add orca/.fork/retired orca/.fork/fork.toml orca/.fork/lock.json
           git commit -q -m "retire(orca): nothing left to carry"
-          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          # main moves under a run (another fork's publish, fleet-digest, a human);
+          # these commits touch only this fork's paths, so a rebase is always clean.
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}" || {
+            git pull --quiet --rebase origin "${GITHUB_REF_NAME}"
+            git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          }
           tok="${FORGE_TOKEN:-$GITHUB_TOKEN}"
           jq -n '{title: "orca retired: switch back to the App Store build",
                   body: "The local identity, push-off and update-source patches are gone, so nothing remains to carry. Install Orca from the App Store and remove the TestFlight build."}' \
