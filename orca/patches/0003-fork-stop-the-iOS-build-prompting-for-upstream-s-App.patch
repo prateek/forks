@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Prateek Rungta <prungta2@gmail.com>
+Date: Mon, 5 Oct 2026 11:19:29 -0400
+Subject: [PATCH 3/3] fork: stop the iOS build prompting for upstream's App
+ Store update
+
+Local-only; never upstreamed.
+---
+ mobile/src/app-update/app-update-runtime.ts | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/mobile/src/app-update/app-update-runtime.ts b/mobile/src/app-update/app-update-runtime.ts
+index aa2d72c760..96075292f9 100644
+--- a/mobile/src/app-update/app-update-runtime.ts
++++ b/mobile/src/app-update/app-update-runtime.ts
+@@ -7,7 +7,6 @@ import {
+   saveAppUpdateCheck,
+   saveDismissedAppUpdateVersion
+ } from '../storage/app-update-preferences'
+-import { appStoreUpdateSource } from './app-store-update-source'
+ import { createAppUpdateChecker, type AppUpdateState } from './app-update-checker'
+ import type { AppUpdateSource } from './app-update-source'
+ import { githubReleaseUpdateSource } from './github-release-update-source'
+@@ -24,9 +23,8 @@ function resolveAppUpdateSource(): AppUpdateSource | null {
+   if (Platform.OS === 'android') {
+     return githubReleaseUpdateSource
+   }
+-  if (Platform.OS === 'ios') {
+-    return appStoreUpdateSource
+-  }
++  // Fork build: TestFlight delivers updates. The App Store listing is upstream's app
++  // under another bundle id, so its version says nothing about this install.
+   return null
+ }
+ 
+-- 
+2.55.0
+

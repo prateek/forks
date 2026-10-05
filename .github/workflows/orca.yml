@@ -1,0 +1,561 @@
+# orca.yml - the Orca iOS fork's workflow in the prateek/forks monorepo.
+# Derived from templates/fork.yml. The output is a TestFlight build, not a tap
+# package, so the build and sign jobs are specific to this fork:
+#   resolve  (hosted ubuntu, Claude token only) — assemble + conflict-resolve.
+#   build    (hosted macOS, ZERO secrets)       — runs upstream's JS + native build and
+#            archives the app UNSIGNED.
+#   sign     (hosted macOS, Apple Distribution cert + App Store Connect key) — runs only
+#            Apple tools and fastlane sigh on the opaque archive: fetch the App Store
+#            profile, export a signed .ipa, upload it. No upstream code runs here.
+#   verify   (hosted ubuntu, App Store Connect key) — wait until Apple has processed
+#            the build and it is in the internal TestFlight group.
+#   publish  (hosted ubuntu, GitHub App key)    — pushes assembled + cuts the release
+#            that records which commit became which TestFlight build.
+# Never pull_request-triggered (public repo; the jobs hold signing and push credentials).
+#
+# No schedule yet: the sign job cannot pass until the Apple-side setup in the infra
+# runbook is done. Add the weekly cron in the change that follows the first verified
+# upload.
+name: orca
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: fork-orca
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  # Public identifiers, not secrets: the team id is in every signature.
+  APPLE_TEAM_ID: 2ZB5WTYXC6
+  IOS_BUNDLE_ID: com.prateek.orca.mobile
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+      summary_b64: ${{ steps.result.outputs.summary_b64 }}
+      state_sha256: ${{ steps.pkg.outputs.state_sha256 }}
+    steps:
+      - name: checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+
+      - name: resolver gate
+        id: gate
+        env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OAUTH" ] || [ -n "$KEY" ]; then
+            echo "resolver=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "resolver=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: assemble
+        id: assemble
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          set -euo pipefail
+          go -C engine build -o "$RUNNER_TEMP/assemble" .
+          "$RUNNER_TEMP/assemble" --repo "$PWD/orca"
+
+      - name: resolve conflicts with claude
+        id: resume
+        if: steps.assemble.outputs.result == 'conflict' && steps.gate.outputs.resolver == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code
+          prompt="orca/.fork/work/.git/fork-conflict-prompt.md"
+          spend=0
+          for round in 1 2 3 4 5; do
+            echo "resolver round $round"
+            out="$(claude -p "$(cat "$prompt")" \
+              --model claude-sonnet-5 --output-format json \
+              --allowedTools "Bash(git add:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout:*),Read,Edit,Grep,Glob" \
+              --max-turns 40 2>/dev/null || true)"
+            cost="$(printf '%s' "$out" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read() or "{}").get("total_cost_usd") or 0)' 2>/dev/null || echo 0)"
+            spend="$(python3 -c 'import sys; print(round(float(sys.argv[1]) + float(sys.argv[2]), 4))' "$spend" "$cost" 2>/dev/null || echo "$spend")"
+            echo "resolver round $round: \$$cost (cumulative \$$spend)" >>"$GITHUB_STEP_SUMMARY"
+            git -C orca/.fork/work diff --stat >>"$GITHUB_STEP_SUMMARY" || true
+            if r="$("$RUNNER_TEMP/assemble" --repo "$PWD/orca" --resume 2>&1)"; then
+              printf '%s\n' "$r"
+              case "$r" in *result=conflict*) continue ;; *) break ;; esac
+            else
+              printf '%s\n' "$r"
+              echo "resolver declined or resume refused; escalating to a human"
+              break
+            fi
+          done
+          echo "resolver_spend_usd=$spend" >>"$GITHUB_OUTPUT"
+
+      - name: consolidate result
+        id: result
+        env:
+          FIRST: ${{ steps.assemble.outputs.result }}
+          FIRST_SUMMARY: ${{ steps.assemble.outputs.summary }}
+          SECOND: ${{ steps.resume.outputs.result }}
+          SECOND_SUMMARY: ${{ steps.resume.outputs.summary }}
+          SPEND: ${{ steps.resume.outputs.resolver_spend_usd }}
+        run: |
+          set -euo pipefail
+          result="${SECOND:-$FIRST}"
+          summary="${SECOND_SUMMARY:-$FIRST_SUMMARY}"
+          [ -n "${SPEND:-}" ] && summary="$summary"$'\n'"resolver spend: \$${SPEND}"
+          echo "result=$result" >>"$GITHUB_OUTPUT"
+          echo "summary_b64=$(printf '%s' "$summary" | base64 | tr -d '\n')" >>"$GITHUB_OUTPUT"
+
+      - name: package state for the build + publish jobs
+        id: pkg
+        if: steps.result.outputs.result == 'synced' || steps.result.outputs.result == 'retire'
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/state.tgz" orca
+          echo "state_sha256=$(shasum -a 256 "$RUNNER_TEMP/state.tgz" | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+
+      - name: upload assembled state
+        if: steps.result.outputs.result == 'synced' || steps.result.outputs.result == 'retire'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-orca-state
+          path: ${{ runner.temp }}/state.tgz
+          retention-days: 1
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: macos-26
+    # Upstream's own archive + upload is 21-30m; the state download adds a few.
+    timeout-minutes: 75
+    # This job runs untrusted upstream code (pnpm install scripts, Expo prebuild,
+    # CocoaPods, xcodebuild); it must hold no token. It archives UNSIGNED — the sign
+    # job applies the distribution identity afterward.
+    permissions: {}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_number: ${{ steps.version.outputs.build_number }}
+    steps:
+      - name: fetch assembled state
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-orca-state
+          path: ${{ runner.temp }}
+      - name: unpack assembled tree
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+      # Expo SDK 55 needs the Swift 6 toolchain; upstream's release workflow pins the
+      # same Xcode.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.5'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: set version and build number
+        id: version
+        working-directory: orca/.fork/work/mobile
+        run: |
+          set -euo pipefail
+          # The marketing version is upstream's. The build number comes from the run,
+          # not from App Store Connect, so this job needs no credential; the
+          # concurrency group serializes runs and run numbers only grow.
+          build_number="$((GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))"
+          # shellcheck disable=SC2016  # the template literal is JavaScript, not shell
+          BUILD_NUMBER="$build_number" node -e '
+            const fs = require("node:fs")
+            const config = JSON.parse(fs.readFileSync("app.json", "utf8"))
+            config.expo.ios.buildNumber = process.env.BUILD_NUMBER
+            fs.writeFileSync("app.json", JSON.stringify(config, null, 2) + "\n")
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${config.expo.version}\nbuild_number=${process.env.BUILD_NUMBER}\n`)
+          '
+      - name: build and archive UNSIGNED (runs upstream code; no secrets)
+        working-directory: orca/.fork/work/mobile
+        env:
+          # The native shell bundles the patched UI. The OTA shell would load
+          # upstream-delivered pages instead.
+          EXPO_PUBLIC_MOBILE_SHELL: native
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile
+          npx expo prebuild --platform ios --no-install
+          npx pod-install ios
+          xcodebuild archive \
+            -workspace ios/Orca.xcworkspace -scheme Orca -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Orca.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: smoke the archive
+        working-directory: orca/.fork/work/mobile
+        env:
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          plist="$RUNNER_TEMP/Orca.xcarchive/Products/Applications/Orca.app/Info.plist"
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist"; }
+          # A build under upstream's bundle id can never be signed by this team, and
+          # one carrying aps-environment needs a Push-enabled profile the fork lacks.
+          [ "$(pb CFBundleIdentifier)" = "$IOS_BUNDLE_ID" ] || { echo "bundle id is $(pb CFBundleIdentifier), expected $IOS_BUNDLE_ID" >&2; exit 1; }
+          [ "$(pb CFBundleVersion)" = "$BUILD_NUMBER" ] || { echo "build number is $(pb CFBundleVersion), expected $BUILD_NUMBER" >&2; exit 1; }
+          if grep -rq 'aps-environment' ios/Orca/*.entitlements; then
+            echo "aps-environment entitlement is present; the push-off patch did not apply" >&2
+            exit 1
+          fi
+          echo "archived $(pb CFBundleDisplayName) $(pb CFBundleShortVersionString) ($(pb CFBundleVersion)) as $(pb CFBundleIdentifier)" | tee -a "$GITHUB_STEP_SUMMARY"
+          lipo -archs "$RUNNER_TEMP/Orca.xcarchive/Products/Applications/Orca.app/Orca" | tee -a "$GITHUB_STEP_SUMMARY"
+          tar -czf "$RUNNER_TEMP/orca-archive.tar.gz" -C "$RUNNER_TEMP" Orca.xcarchive
+      - name: upload unsigned archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-orca-archive-unsigned
+          path: ${{ runner.temp }}/orca-archive.tar.gz
+          retention-days: 1
+
+  sign:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: macos-26
+    timeout-minutes: 30
+    # Holds the Apple Distribution cert and the App Store Connect key. It treats the
+    # archive as an opaque payload: only security, fastlane sigh, xcodebuild
+    # -exportArchive and altool run here, never the assembled tree.
+    permissions: {}
+    steps:
+      - name: fetch unsigned archive
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-orca-archive-unsigned
+          path: ${{ runner.temp }}
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.5'
+      - name: sign, export and upload to TestFlight
+        env:
+          CERT_P12: ${{ secrets.IOS_DIST_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
+          FASTLANE_HIDE_CHANGELOG: '1'
+        run: |
+          set -euo pipefail
+          for v in CERT_P12 CERT_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_API_KEY_P8; do
+            [ -n "${!v}" ] || { echo "secret for $v is not set on this repo; see the infra runbook" >&2; exit 1; }
+          done
+          cd "$RUNNER_TEMP"
+          tar -xzf orca-archive.tar.gz
+
+          kc="$RUNNER_TEMP/fork-sign.keychain-db"
+          kcpw="$(openssl rand -base64 24)"
+          keydir="$HOME/.appstoreconnect/private_keys"
+          cleanup() {
+            security delete-keychain "$kc" 2>/dev/null || true
+            rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/asc-key.json" "$keydir/AuthKey_${ASC_KEY_ID}.p8"
+          }
+          trap cleanup EXIT
+
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          printf '%s' "$CERT_P12" | base64 --decode > cert.p12
+          security import cert.p12 -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
+          # shellcheck disable=SC2046  # intentional split of the existing keychain list into args
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | sed 's/"//g')
+          security find-identity -p codesigning "$kc" | grep -q 'Apple Distribution' \
+            || { echo "no Apple Distribution identity in the cert" >&2; exit 1; }
+
+          # altool reads the key from this directory by key id.
+          mkdir -p "$keydir"
+          (umask 077; printf '%s' "$ASC_API_KEY_P8" | base64 --decode > "$keydir/AuthKey_${ASC_KEY_ID}.p8")
+          (umask 077; KEY_PATH="$keydir/AuthKey_${ASC_KEY_ID}.p8" python3 -c '
+          import json, os
+          print(json.dumps({"key_id": os.environ["ASC_KEY_ID"], "issuer_id": os.environ["ASC_ISSUER_ID"],
+                            "key": open(os.environ["KEY_PATH"]).read(), "in_house": False}))' > asc-key.json)
+
+          # Fetch the App Store profile for this cert, creating it when missing or
+          # expired. Explicit profile + manual signing works with any team API key;
+          # Xcode cloud-managed signing needs an Admin key.
+          command -v fastlane >/dev/null 2>&1 || brew install fastlane
+          fastlane sigh --api-key-path asc-key.json --app-identifier "$IOS_BUNDLE_ID" \
+            --team-id "$APPLE_TEAM_ID" --output-path "$RUNNER_TEMP" --filename orca.mobileprovision
+          security cms -D -i orca.mobileprovision > profile.plist
+          profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' profile.plist)"
+
+          cat > export-options.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>provisioningProfiles</key><dict><key>${IOS_BUNDLE_ID}</key><string>${profile_name}</string></dict>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath Orca.xcarchive \
+            -exportOptionsPlist export-options.plist -exportPath export
+          ipa="$(find export -name '*.ipa' -maxdepth 1 | head -1)"
+          [ -n "$ipa" ] || { echo "export produced no .ipa" >&2; exit 1; }
+
+          # Prove what was signed before it leaves the runner.
+          unzip -q "$ipa" -d ipa
+          codesign --verify --strict --verbose=2 ipa/Payload/Orca.app
+          codesign -dv --verbose=2 ipa/Payload/Orca.app 2>&1 | grep -E 'Identifier=|TeamIdentifier=|Authority=' | tee -a "$GITHUB_STEP_SUMMARY"
+          codesign -dv ipa/Payload/Orca.app 2>&1 | grep -q "TeamIdentifier=${APPLE_TEAM_ID}" \
+            || { echo "signed by an unexpected team" >&2; exit 1; }
+
+          xcrun altool --upload-app -f "$ipa" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+  verify:
+    needs: [resolve, build, sign]
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: ubuntu-latest
+    # Apple usually processes a build in 5-20m. An upload is not an install: this job
+    # is what turns "uploaded" into "testable in the internal group".
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: wait for processing and internal distribution
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          IOS_VERSION: ${{ needs.build.outputs.version }}
+          IOS_BUILD: ${{ needs.build.outputs.build_number }}
+        run: |
+          scripts/asc wait-build --bundle-id "$IOS_BUNDLE_ID" --version "$IOS_VERSION" \
+            --build "$IOS_BUILD" --timeout-minutes 40 | tee -a "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: [resolve, build, sign]
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write   # dispatch fleet-digest after a release
+    steps:
+      - name: checkout monorepo
+        uses: actions/checkout@v4
+      - name: fetch assembled state
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-orca-state
+          path: ${{ runner.temp }}
+      # GitHub only: mint a contents token scoped to the upstream fork for the
+      # assembled-branch push.
+      - name: mint fork push token
+        if: github.server_url == 'https://github.com'
+        id: mint
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORK_APP_ID }}
+          private-key: ${{ secrets.FORK_APP_PRIVATE_KEY }}
+          owner: prateek
+          repositories: orca
+          permission-contents: write
+
+      - name: publish
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORK_TOKEN: ${{ steps.mint.outputs.token }}
+          SUMMARY_B64: ${{ needs.resolve.outputs.summary_b64 }}
+          STATE_SHA256: ${{ needs.resolve.outputs.state_sha256 }}
+          IOS_VERSION: ${{ needs.build.outputs.version }}
+          IOS_BUILD: ${{ needs.build.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          summary="$(printf '%s' "$SUMMARY_B64" | base64 -d)"
+
+          # Integrity gate: the state tar comes from resolve, but build (which
+          # runs untrusted code) shares the artifact backend. Verify against
+          # resolve's job output before trusting a byte of it.
+          got="$(shasum -a 256 "$RUNNER_TEMP/state.tgz" | cut -d' ' -f1)"
+          if [ "$got" != "$STATE_SHA256" ]; then
+            echo "state artifact sha mismatch: expected $STATE_SHA256, got $got" >&2
+            exit 1
+          fi
+
+          rm -rf orca
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+
+          git config user.name fork-assemble
+          git config user.email fork-assemble@invalid
+
+          fork_hdr() {
+            if [ "$GITHUB_SERVER_URL" = "https://github.com" ]; then
+              printf 'Authorization: Basic %s' "$(printf 'x-access-token:%s' "$1" | base64 | tr -d '\n')"
+            else
+              printf 'Authorization: token %s' "$1"
+            fi
+          }
+
+          # Push the assembled commit to the upstream fork's `assembled` branch
+          # plus a permanent tag, then record it as the src gitlink.
+          work="orca/.fork/work"
+          # The fork-automation app is contents-only (no `workflows` permission), so
+          # GitHub rejects a push that creates/updates .github/workflows. Orca ships
+          # workflow files; drop them from the assembled branch before pushing (running
+          # upstream's CI on our fork is undesirable anyway). The build ran on the full
+          # tree, so this doesn't affect the uploaded binary.
+          if [ -n "$(git -C "$work" ls-files .github/workflows)" ]; then
+            git -C "$work" rm -r -q .github/workflows
+            git -C "$work" -c user.name=fork-assemble -c user.email=fork-assemble@invalid \
+              commit -q -m "fork: drop upstream workflows from the assembled branch"
+          fi
+          assembled="$(git -C "$work" rev-parse HEAD)"
+          tag="orca-v$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          fork_url="${GITHUB_SERVER_URL}/prateek/orca.git"
+          push_tok="${FORK_TOKEN:-$FORGE_TOKEN}"
+          git -C "$work" -c http.extraHeader="$(fork_hdr "$push_tok")" \
+            push --quiet --force "$fork_url" "HEAD:refs/heads/assembled"
+          git -C "$work" -c http.extraHeader="$(fork_hdr "$push_tok")" \
+            push --quiet --force "$fork_url" "HEAD:refs/tags/assembled-${tag}"
+          git update-index --add --cacheinfo 160000,"$assembled",orca/src
+          git config -f .gitmodules submodule."orca/src".path "orca/src"
+          git config -f .gitmodules submodule."orca/src".url "$fork_url"
+          git config -f .gitmodules submodule."orca/src".branch assembled
+
+          git add .gitmodules orca/.fork/fork.toml orca/.fork/lock.json
+          [ -d orca/patches ] && git add orca/patches || true
+          [ -d orca/rerere ] && git add orca/rerere || true
+          if git diff --cached --quiet; then
+            echo "manifest unchanged; nothing to release"
+            echo "released=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "sync(orca): $(printf '%s' "$summary" | head -1)" -m "$summary"
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+
+          # The binary lives in TestFlight, so the release carries no asset. It is the
+          # public record of which assembled commit became which TestFlight build.
+          notes="$(printf '%s\n\nTestFlight: %s (%s)\nAssembled: prateek/orca@%s (tag assembled-%s)\n' \
+            "$summary" "$IOS_VERSION" "$IOS_BUILD" "$assembled" "$tag")"
+          GH_TOKEN="$GITHUB_TOKEN" gh release create "$tag" --title "$tag" --notes "$notes"
+          echo "released=true" >>"$GITHUB_OUTPUT"
+
+      - name: refresh fleet status
+        if: steps.publish.outputs.released == 'true' && github.server_url == 'https://github.com'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run fleet-digest.yml --repo "$GITHUB_REPOSITORY"
+
+  lifecycle:
+    needs: resolve
+    if: needs.resolve.outputs.result == 'conflict' || needs.resolve.outputs.result == 'retire'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+      actions: write
+    steps:
+      - name: checkout monorepo
+        if: needs.resolve.outputs.result == 'retire'
+        uses: actions/checkout@v4
+      - name: fetch assembled state
+        if: needs.resolve.outputs.result == 'retire'
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-orca-state
+          path: ${{ runner.temp }}
+
+      - name: report conflict
+        if: needs.resolve.outputs.result == 'conflict'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          SUMMARY_B64: ${{ needs.resolve.outputs.summary_b64 }}
+        run: |
+          set -euo pipefail
+          summary="$(printf '%s' "$SUMMARY_B64" | base64 -d)"
+          tok="${FORGE_TOKEN:-$GITHUB_TOKEN}"
+          jq -n --arg body "$summary" \
+            '{title: "orca sync conflict needs a human", body: $body}' \
+            | curl -fsS -X POST -H "Authorization: token ${tok}" \
+                -H "Content-Type: application/json" --data-binary @- \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues" >/dev/null
+          echo "conflict escalated as an issue"
+
+      - name: retire
+        if: needs.resolve.outputs.result == 'retire'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf orca
+          tar -xzf "$RUNNER_TEMP/state.tgz"
+          git config user.name fork-assemble
+          git config user.email fork-assemble@invalid
+          mkdir -p orca/.fork
+          printf 'retired %s\n' "$(date -u +%FT%TZ)" >orca/.fork/retired
+          git add orca/.fork/retired orca/.fork/fork.toml orca/.fork/lock.json
+          git commit -q -m "retire(orca): nothing left to carry"
+          git push --quiet origin "HEAD:${GITHUB_REF_NAME}"
+          tok="${FORGE_TOKEN:-$GITHUB_TOKEN}"
+          jq -n '{title: "orca retired: switch back to the App Store build",
+                  body: "The local identity, push-off and update-source patches are gone, so nothing remains to carry. Install Orca from the App Store and remove the TestFlight build."}' \
+            | curl -fsS -X POST -H "Authorization: token ${tok}" \
+                -H "Content-Type: application/json" --data-binary @- \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues" >/dev/null
+          if [ "$GITHUB_SERVER_URL" = "https://github.com" ]; then
+            GH_TOKEN="$GITHUB_TOKEN" gh workflow disable orca.yml
+          fi
+          echo "retired orca"
+
+  stale:
+    needs: resolve
+    if: needs.resolve.outputs.result == 'no_op'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # A TestFlight build expires 90 days after upload. no_op means nothing changed
+      # upstream, so no rebuild is coming; say so while there is still time to act.
+      - name: warn when the TestFlight build is close to expiry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          published="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name | startswith("orca-v"))][0].published_at // empty')"
+          [ -n "$published" ] || { echo "no orca release yet"; exit 0; }
+          age_days="$(( ($(date -u +%s) - $(date -u -d "$published" +%s)) / 86400 ))"
+          echo "latest orca release is ${age_days}d old"
+          [ "$age_days" -ge 75 ] || exit 0
+          title="orca TestFlight build expires in $((90 - age_days)) days"
+          if [ -z "$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "orca TestFlight build expires in:title" --json number --jq '.[0].number // empty')" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --body "The last orca release was published ${published} and upstream has not changed since, so no sync has rebuilt it. Change a carried input (for example touch a patch under orca/patches) and dispatch orca.yml to upload a fresh build."
+          fi

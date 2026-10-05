@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Prateek Rungta <prungta2@gmail.com>
+Date: Mon, 5 Oct 2026 11:19:29 -0400
+Subject: [PATCH 1/3] fork: ship the iOS app under Prateek's bundle id as Orca
+ Fork
+
+A personal TestFlight build cannot reuse upstream's bundle id: it belongs to
+upstream's Apple team. The display name tells the fork apart from the App Store
+app on the home screen; expo.name stays Orca so the generated Xcode workspace
+and scheme keep their names. Local-only; never upstreamed.
+---
+ mobile/app.json | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mobile/app.json b/mobile/app.json
+index 5ff4b7a51f..a38ab5d511 100644
+--- a/mobile/app.json
++++ b/mobile/app.json
+@@ -15,9 +15,10 @@
+     },
+     "ios": {
+       "supportsTablet": true,
+-      "bundleIdentifier": "com.stably.orca.mobile",
++      "bundleIdentifier": "com.prateek.orca.mobile",
+       "buildNumber": "1",
+       "infoPlist": {
++        "CFBundleDisplayName": "Orca Fork",
+         "NSLocalNetworkUsageDescription": "Orca connects to the desktop app on your LAN.",
+         "NSMicrophoneUsageDescription": "Allow Orca to record voice dictation and transcribe it on your paired desktop.",
+         "NSPhotoLibraryUsageDescription": "Allow Orca to attach photos from your library to a terminal session on your paired desktop.",
+-- 
+2.55.0
+

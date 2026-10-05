@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Prateek Rungta <prungta2@gmail.com>
+Date: Mon, 5 Oct 2026 11:19:29 -0400
+Subject: [PATCH 2/3] fork: turn off iOS remote push registration
+
+Upstream's push gateway holds upstream's APNs credentials, so a device token
+from this bundle id is undeliverable there, and hosting a second gateway is out
+of scope. No aps-environment entitlement, and no iOS token ever leaves the app.
+Local-only; never upstreamed.
+---
+ mobile/app.config.js                   | 35 +++++---------------------
+ mobile/src/notifications/push-token.ts |  7 +++++-
+ 2 files changed, 12 insertions(+), 30 deletions(-)
+
+diff --git a/mobile/app.config.js b/mobile/app.config.js
+index e4bb110089..8bf64846fe 100644
+--- a/mobile/app.config.js
++++ b/mobile/app.config.js
+@@ -1,32 +1,9 @@
+-// Why this file exists: a bare "expo-notifications" plugin entry writes
+-// `aps-environment: development` into the iOS entitlements, while push-token.ts
+-// reports `production` for every non-__DEV__ build. A TestFlight or App Store build
+-// would then register a production APNs token against a sandbox entitlement, and the
+-// gateway's pushes would be accepted by Apple and delivered nowhere. Deriving the
+-// mode from an env var the release workflow sets makes the two agree by construction
+-// instead of relying on the export step to rewrite the entitlement.
+-//
+-// app.json stays the source for everything else: Expo reads it first and hands it to
+-// this function, so the fastlane version/buildNumber rewrite still flows through.
+-const APS_ENVIRONMENT =
+-  process.env.ORCA_IOS_APS_ENVIRONMENT === 'production' ? 'production' : 'development'
+-
++// Fork build: remote push is off. Upstream's push gateway signs for upstream's Apple
++// team and APNs topic, so a token from this bundle id could never be delivered to.
++// Dropping the expo-notifications config plugin keeps `aps-environment` out of the
++// entitlements, which also keeps the App Store profile free of the Push capability.
++// The module itself stays linked: local notifications need no entitlement.
+ module.exports = ({ config }) => ({
+   ...config,
+-  ios: {
+-    ...config.ios,
+-    entitlements: { ...config.ios?.entitlements, 'aps-environment': APS_ENVIRONMENT }
+-  },
+-  plugins: (config.plugins ?? []).map((plugin) =>
+-    plugin === 'expo-notifications'
+-      ? [
+-          'expo-notifications',
+-          {
+-            enableBackgroundRemoteNotifications: true,
+-            mode: APS_ENVIRONMENT,
+-            icon: './assets/notification-icon.png'
+-          }
+-        ]
+-      : plugin
+-  )
++  plugins: (config.plugins ?? []).filter((plugin) => plugin !== 'expo-notifications')
+ })
+diff --git a/mobile/src/notifications/push-token.ts b/mobile/src/notifications/push-token.ts
+index 6c93bfb150..6b0969e23d 100644
+--- a/mobile/src/notifications/push-token.ts
++++ b/mobile/src/notifications/push-token.ts
+@@ -1,4 +1,5 @@
+ import * as Notifications from 'expo-notifications'
++import { Platform } from 'react-native'
+ import type {
+   MobilePushApnsEnvironment,
+   MobilePushPlatform
+@@ -33,6 +34,10 @@ function toMobilePushToken(raw: { type: string; data: unknown }): MobilePushToke
+  * The native push token, or null if registration is unavailable or fails.
+  */
+ export async function getDevicePushToken(): Promise<MobilePushToken | null> {
++  // Fork build: never hand an iOS device token to a host. See app.config.js.
++  if (Platform.OS === 'ios') {
++    return null
++  }
+   try {
+     return toMobilePushToken(await Notifications.getDevicePushTokenAsync())
+   } catch {
+@@ -45,7 +50,7 @@ export function addPushTokenListener(listener: (token: MobilePushToken) => void)
+   try {
+     const subscription = Notifications.addPushTokenListener((raw) => {
+       const token = toMobilePushToken(raw)
+-      if (token) {
++      if (token && token.platform !== 'ios') {
+         listener(token)
+       }
+     })
+-- 
+2.55.0
+

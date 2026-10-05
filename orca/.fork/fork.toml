@@ -1,0 +1,26 @@
+# fork.toml - manifest of one fork in the prateek/forks monorepo.
+# The sync engine (../engine) reads [upstream], [prs], [branches], [patches];
+# `sha`, `track`, and remote-patch entries are engine-maintained. The rest is
+# read by setup/the workflow. Edit the hand-owned fields by hand.
+
+[upstream]
+repo = "stablyai/orca"
+branch = "main"
+sha = "d17351401d7372f3f48cc3cdb423147d8c8e61c1"
+
+[prs]
+# No tracked upstream PRs yet. The divergence is the local identity, push-off and
+# update-source patches under patches/, which never upstream, so this fork never
+# auto-retires.
+track = []
+
+# The iOS build and TestFlight upload are several workflow steps, not one
+# command; .github/workflows/orca.yml owns them. These fields record the outputs.
+[build]
+command = "see .github/workflows/orca.yml (build job)"
+output = "mobile/build/Orca.xcarchive"
+smoke = "bundle id of the archived app is com.prateek.orca.mobile"
+
+[release]
+kind = "testflight"
+tool = "orca"

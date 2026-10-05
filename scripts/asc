@@ -1,0 +1,301 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = ["cryptography>=45", "httpx>=0.28", "pyjwt[crypto]>=2.10"]
+# ///
+"""asc — App Store Connect operations for the iOS forks in prateek/forks.
+
+  asc status                      what the API key can see: apps, bundle ids,
+                                  certificates, profiles. Read-only.
+  asc wait-build ...              CI: wait until an uploaded build is processed and
+                                  in an internal TestFlight group.
+  asc provision --bundle-id ...   one-time, local: register the bundle id, create the
+                                  Apple Distribution certificate, store it in
+                                  1Password and set the repo secrets.
+
+Credentials come from ASC_KEY_ID / ASC_ISSUER_ID / ASC_API_KEY_P8 (base64 .p8) when
+set, as in CI. Otherwise they are read with `op read` from the
+gh-prateek-fork-automation vault, so a local run needs an `op` session that can read
+it (`provision` also needs write access, which the sync service account lacks).
+
+No secret value is ever printed.
+"""
+
+import argparse
+import base64
+import json
+import os
+import secrets
+import subprocess
+import sys
+import time
+
+import httpx
+import jwt
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography.x509.oid import NameOID
+
+API = "https://api.appstoreconnect.apple.com"
+VAULT = "ntlr63z3flo3njozu67vnykfx4"
+# UUID-pinned like scripts/sync-fork-secrets, so a rename in 1Password can't break it.
+KEY_REFS = {
+    "ASC_KEY_ID": f"op://{VAULT}/tiplui43dlnaz7ts2o6e5xl4si/onsg2smaaiixr6c4zbb2jauyey",
+    "ASC_ISSUER_ID": f"op://{VAULT}/tiplui43dlnaz7ts2o6e5xl4si/aatu2bp6gelqjzmjw4muhl67se",
+    "ASC_API_KEY_P8": f"op://{VAULT}/tiplui43dlnaz7ts2o6e5xl4si/fxilpfm3ksmasjyo7nnz3uuwpe",
+}
+DIST_CERT_ITEM = "apple-distribution-cert"
+
+
+class AscError(RuntimeError):
+    pass
+
+
+def credential(name):
+    value = os.environ.get(name)
+    if value:
+        return value
+    r = subprocess.run(["op", "read", KEY_REFS[name]], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise AscError(f"{name} is not in the environment and `op read` failed: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+
+class Client:
+    def __init__(self):
+        self.key_id = credential("ASC_KEY_ID")
+        self.issuer = credential("ASC_ISSUER_ID")
+        self.p8 = base64.b64decode(credential("ASC_API_KEY_P8")).decode()
+        self.http = httpx.Client(timeout=30)
+
+    def _headers(self):
+        # Tokens last at most 20 minutes; a fresh one per request outlives any wait.
+        now = int(time.time())
+        claims = {"iss": self.issuer, "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"}
+        token = jwt.encode(claims, self.p8, algorithm="ES256", headers={"kid": self.key_id})
+        return {"Authorization": f"Bearer {token}"}
+
+    def request(self, method, path, **kwargs):
+        r = self.http.request(method, API + path, headers=self._headers(), **kwargs)
+        if r.status_code >= 400:
+            try:
+                errors = [f"{e.get('code')}: {e.get('detail')}" for e in r.json()["errors"]]
+            except (ValueError, KeyError):
+                errors = [r.text[:300]]
+            raise AscError(f"{method} {path} -> HTTP {r.status_code}: " + "; ".join(errors))
+        return r.json() if r.content else {}
+
+    def get(self, path, **params):
+        return self.request("GET", path, params=params)
+
+    def post(self, path, body):
+        return self.request("POST", path, json=body)
+
+
+def find_app(c, bundle_id):
+    apps = c.get("/v1/apps", **{"filter[bundleId]": bundle_id})["data"]
+    return next((a for a in apps if a["attributes"]["bundleId"] == bundle_id), None)
+
+
+def cmd_status(c, _args):
+    listings = [
+        ("/v1/apps", ["bundleId", "name", "sku"]),
+        ("/v1/bundleIds", ["identifier", "name", "platform"]),
+        (
+            "/v1/certificates",
+            ["certificateType", "displayName", "serialNumber", "expirationDate"],
+        ),
+        ("/v1/profiles", ["name", "profileType", "profileState", "expirationDate"]),
+    ]
+    failed = False
+    for path, fields in listings:
+        print(f"== {path}")
+        try:
+            rows = c.get(path, limit=200)["data"]
+        except AscError as e:
+            failed = True
+            print(f"   {e}")
+            continue
+        for row in rows:
+            print("  ", row["id"], {k: row["attributes"].get(k) for k in fields})
+        if not rows:
+            print("   (none)")
+    return 1 if failed else 0
+
+
+def cmd_wait_build(c, args):
+    app = find_app(c, args.bundle_id)
+    if not app:
+        raise AscError(f"no App Store Connect app record for {args.bundle_id}")
+    deadline = time.monotonic() + args.timeout_minutes * 60
+    build = None
+    while True:
+        builds = c.get(
+            "/v1/builds",
+            **{
+                "filter[app]": app["id"],
+                "filter[version]": args.build,
+                "filter[preReleaseVersion.version]": args.version,
+            },
+        )["data"]
+        state = builds[0]["attributes"]["processingState"] if builds else "NOT_VISIBLE_YET"
+        print(f"build {args.version} ({args.build}): {state}", flush=True)
+        if state == "VALID":
+            build = builds[0]
+            break
+        if state in ("FAILED", "INVALID"):
+            raise AscError(f"Apple rejected build {args.version} ({args.build}): {state}")
+        if time.monotonic() > deadline:
+            raise AscError(
+                f"build {args.version} ({args.build}) still {state} after "
+                f"{args.timeout_minutes}m; it was uploaded, so re-run only this job"
+            )
+        time.sleep(60)
+
+    groups = c.get(f"/v1/apps/{app['id']}/betaGroups", limit=50)["data"]
+    internal = [g for g in groups if g["attributes"]["isInternalGroup"]]
+    if not internal:
+        raise AscError(
+            "the build is processed but the app has no internal TestFlight group; "
+            "create one in App Store Connect and add yourself as a tester"
+        )
+    for group in internal:
+        name = group["attributes"]["name"]
+        if group["attributes"].get("hasAccessToAllBuilds"):
+            print(f"internal group '{name}' receives every build automatically")
+            continue
+        c.post(
+            f"/v1/betaGroups/{group['id']}/relationships/builds",
+            {"data": [{"type": "builds", "id": build["id"]}]},
+        )
+        print(f"added the build to internal group '{name}'")
+    expires = build["attributes"].get("expirationDate")
+    print(f"TestFlight build {args.version} ({args.build}) is ready; expires {expires}")
+    return 0
+
+
+def op_json(*args, stdin=None):
+    r = subprocess.run(["op", *args, "--format", "json"], input=stdin, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise AscError(f"op {args[0]} {args[1]} failed: {r.stderr.strip()}")
+    return json.loads(r.stdout)
+
+
+def cmd_provision(c, args):
+    existing = subprocess.run(
+        ["op", "item", "get", DIST_CERT_ITEM, "--vault", VAULT, "--format", "json"],
+        capture_output=True,
+        text=True,
+    )
+    if existing.returncode == 0:
+        raise AscError(
+            f"1Password already has '{DIST_CERT_ITEM}'. Revoke the old certificate and "
+            "archive that item before creating a replacement."
+        )
+
+    bundle_ids = c.get("/v1/bundleIds", **{"filter[identifier]": args.bundle_id})["data"]
+    if any(b["attributes"]["identifier"] == args.bundle_id for b in bundle_ids):
+        print(f"bundle id {args.bundle_id} is already registered")
+    else:
+        c.post(
+            "/v1/bundleIds",
+            {
+                "data": {
+                    "type": "bundleIds",
+                    "attributes": {
+                        "identifier": args.bundle_id,
+                        "name": args.name,
+                        "platform": "IOS",
+                    },
+                }
+            },
+        )
+        print(f"registered bundle id {args.bundle_id}")
+
+    # The private key never touches disk: it goes from memory into the .p12, and the
+    # .p12 goes to 1Password and GitHub over stdin.
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "prateek/forks iOS")]))
+        .sign(key, hashes.SHA256())
+    )
+    created = c.post(
+        "/v1/certificates",
+        {
+            "data": {
+                "type": "certificates",
+                "attributes": {
+                    "certificateType": "DISTRIBUTION",
+                    "csrContent": csr.public_bytes(serialization.Encoding.PEM).decode(),
+                },
+            }
+        },
+    )["data"]
+    cert = x509.load_der_x509_certificate(base64.b64decode(created["attributes"]["certificateContent"]))
+    password = secrets.token_urlsafe(24)
+    p12 = pkcs12.serialize_key_and_certificates(
+        b"Apple Distribution",
+        key,
+        cert,
+        None,
+        serialization.BestAvailableEncryption(password.encode()),
+    )
+    p12_b64 = base64.b64encode(p12).decode()
+
+    template = {
+        "title": DIST_CERT_ITEM,
+        "category": "LOGIN",
+        "fields": [
+            {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain",
+             "value": f"Apple Distribution, team {args.team_id}. Created by scripts/asc provision."},
+            {"type": "CONCEALED", "label": "distribution-b64.p12", "value": p12_b64},
+            {"type": "CONCEALED", "label": "export-password", "value": password},
+        ],
+    }  # fmt: skip
+    item = op_json("item", "create", "--vault", VAULT, "-", stdin=json.dumps(template))
+    refs = {f["label"]: f"op://{VAULT}/{item['id']}/{f['id']}" for f in item["fields"]}
+
+    for name, value in (("IOS_DIST_CERT_P12", p12_b64), ("IOS_DIST_CERT_PASSWORD", password)):
+        subprocess.run(["gh", "secret", "set", name, "--repo", args.repo], input=value, text=True, check=True)
+
+    print(f"certificate id {created['id']}")
+    print(f"  subject   {cert.subject.rfc4514_string()}")
+    print(f"  serial    {format(cert.serial_number, 'X')}")
+    print(f"  sha256    {cert.fingerprint(hashes.SHA256()).hex().upper()}")
+    print(f"  expires   {cert.not_valid_after_utc.date()}")
+    print(f"stored in 1Password item {item['id']} and set on {args.repo}")
+    print("add these to scripts/sync-fork-secrets so rotation keeps working:")
+    print(f"  set_secret IOS_DIST_CERT_P12      '{refs['distribution-b64.p12']}'")
+    print(f"  set_secret IOS_DIST_CERT_PASSWORD '{refs['export-password']}'")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="asc", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("status").set_defaults(run=cmd_status)
+    wait = sub.add_parser("wait-build")
+    wait.add_argument("--bundle-id", required=True)
+    wait.add_argument("--version", required=True)
+    wait.add_argument("--build", required=True)
+    wait.add_argument("--timeout-minutes", type=int, default=40)
+    wait.set_defaults(run=cmd_wait_build)
+    provision = sub.add_parser("provision")
+    provision.add_argument("--bundle-id", required=True)
+    provision.add_argument("--name", required=True, help="display name for the bundle id record")
+    provision.add_argument("--team-id", default="2ZB5WTYXC6")
+    provision.add_argument("--repo", default="prateek/forks")
+    provision.set_defaults(run=cmd_provision)
+    args = parser.parse_args()
+    try:
+        return args.run(Client(), args)
+    except AscError as e:
+        print(f"asc: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
