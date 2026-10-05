@@ -163,7 +163,8 @@ After the dotfiles `packages.toml` PR merges (via the `fork-lifecycle` skill) an
 
 ## Credentials
 
-CI never talks to 1Password. One app, one vault, three GitHub secrets.
+CI never talks to 1Password. One app, one vault; the secret list is in
+[AGENTS.md](../../../AGENTS.md#credentials).
 
 - **App `prateek-fork-automation`** — Contents: read and write, nothing else.
   Installed **only** on each `prateek/<upstream-fork>`, never on this repo,
@@ -176,13 +177,12 @@ CI never talks to 1Password. One app, one vault, three GitHub secrets.
   the Claude OAuth token (from `claude setup-token`). `sync-fork-secrets` pins
   its `op://` refs to vault/item/field **UUIDs** so a rename in 1Password can't
   silently break the sync.
-- **Three GitHub secrets on `prateek/forks`**, referenced one-job-each:
-  `CLAUDE_CODE_OAUTH_TOKEN` (resolve), `FORK_APP_ID` + `FORK_APP_PRIVATE_KEY`
-  (publish). They are **repo-level** — every per-tool workflow shares them — so
-  **adding a fork needs no new secret**, only the app-install click above.
+- **The secrets are repo-level** — every per-tool workflow shares them — so
+  **adding an ad-hoc-signed fork needs no new secret**, only the app-install
+  click above.
 
 Seeding and rotation both run one command, `scripts/sync-fork-secrets`. It reads
-the three items with a 1Password **service account scoped read-only to the
+the items with a 1Password **service account scoped read-only to the
 `gh-prateek-fork-automation` vault**, and `gh secret set`s them; nothing is ever
 printed. To rotate, edit the 1P item and re-run it.
 

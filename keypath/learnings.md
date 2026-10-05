@@ -54,6 +54,12 @@ There are no tracked upstream PRs.
   via cargo; ARM64-only (`build/kanata-universal` is a misnomer). The build job installs
   rustup if absent (the Tahoe-Xcode runner image ships Swift/Xcode but not Rust) and
   runs `git submodule update --init External/kanata` first.
+- Upstream pins Xcode 27.0 (`Scripts/lib/xcode.sh`, since 2026-07) and every script,
+  sign-only mode included, exits "Xcode 27.0 is not installed under /Applications"
+  on anything else. Hosted `macos-26` stops at Xcode 26.x, so build and sign run on
+  the standard-size `xcode-27` image, whose `/Applications/Xcode.app` is 27.0. When
+  upstream moves the pin, pick the hosted image that carries that version before
+  reaching for `KEYPATH_DEV_XCODE_DEVELOPER_DIR`.
 - Build flags for CI: `SKIP_CODESIGN=1 SKIP_NOTARIZE=1 SKIP_SPARKLE=1 SKIP_SNAPSHOTS=1
   SKIP_DEPLOY=1` (build job) then `KEYPATH_SIGN_ONLY=1 SKIP_NOTARIZE=1 SKIP_DEPLOY=1`
   (sign job). Sparkle EdDSA / create-dmg / xcodegen are unneeded with these skips.

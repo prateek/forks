@@ -132,7 +132,9 @@ jobs:
   build:
     needs: resolve
     if: needs.resolve.outputs.result == 'synced'
-    runs-on: macos-26
+    # Upstream's scripts refuse any Xcode but 27.0 (Scripts/lib/xcode.sh). macos-26
+    # tops out at Xcode 26.x; the standard-size xcode-27 image has 27.0 as default.
+    runs-on: xcode-27
     # KeyPath is heavier than the ad-hoc forks: a cold Rust (kanata) + Swift release
     # build plus the Sparkle framework. The timeout bounds a hung build.
     timeout-minutes: 60
@@ -172,7 +174,8 @@ jobs:
   sign:
     needs: [resolve, build]
     if: needs.resolve.outputs.result == 'synced'
-    runs-on: macos-26
+    # Same image as build: sign-only mode still passes upstream's Xcode check.
+    runs-on: xcode-27
     timeout-minutes: 30
     # Holds the Developer ID cert. Runs KeyPath's OWN signing (build-and-sign.sh in
     # KEYPATH_SIGN_ONLY mode) on the opaque prebuilt bundle — the inside-out codesign

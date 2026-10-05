@@ -103,17 +103,30 @@ never shares a runner with credentials:
    the `src` gitlink, cut the release with the built asset, commit the
    formula/cask. Default-token pushes do not retrigger workflows.
 
+Two forks extend the shape: keypath adds a `sign` job for a Developer ID
+signature, and orca replaces the tap package with a TestFlight upload (`sign`
+exports and uploads, `verify` waits for Apple). Their headers and
+`<tool>/learnings.md` say why.
+
 `lifecycle` handles the conflict path (a needs-human self-issue) and the retire
 path (marker, self-issue, `gh workflow disable`).
 
 ## Credentials
 
-CI never talks to 1Password. Three GitHub secrets on this repo, referenced
-one-job-each:
+CI never talks to 1Password. Repo-level GitHub secrets, each referenced by the
+fewest jobs that need it:
 
 - `CLAUDE_CODE_OAUTH_TOKEN` — `resolve` only.
 - `FORK_APP_ID` + `FORK_APP_PRIVATE_KEY` — `publish` only; mint a contents-only
   token scoped to `prateek/<upstream>`.
+- `FORK_SIGN_CERT_P12` + `FORK_SIGN_CERT_PASSWORD` — keypath `sign` only
+  (Developer ID Application).
+- `IOS_DIST_CERT_P12` + `IOS_DIST_CERT_PASSWORD` — orca `sign` only (Apple
+  Distribution).
+- `ASC_KEY_ID` + `ASC_ISSUER_ID` + `ASC_API_KEY_P8` — orca `sign` and `verify`.
+
+Certificate identities, expiry, rotation and the Apple account setup are recorded
+in the infra repo (`services/fork-fleet/README.md`).
 
 The `prateek-fork-automation` app is installed **only** on the upstream forks —
 never on this repo, dotfiles, or the old homebrew-tap. A stolen app key reaches
