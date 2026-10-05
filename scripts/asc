@@ -9,6 +9,8 @@
                                   certificates, profiles. Read-only.
   asc wait-build ...              CI: wait until an uploaded build is processed and
                                   in an internal TestFlight group.
+  asc profile ...                 CI: write the App Store provisioning profile for a
+                                  bundle id, creating it when none is active.
   asc provision --bundle-id ...   one-time, local: register the bundle id, create the
                                   Apple Distribution certificate, store it in
                                   1Password and set the repo secrets.
@@ -176,6 +178,54 @@ def cmd_wait_build(c, args):
     return 0
 
 
+def cmd_profile(c, args):
+    """Write an active App Store profile for the bundle id, creating one if needed."""
+    certs = c.get("/v1/certificates", **{"filter[certificateType]": "DISTRIBUTION", "limit": 50})["data"]
+    if not certs:
+        raise AscError("the team has no Apple Distribution certificate; run `asc provision`")
+    cert_ids = {x["id"] for x in certs}
+    bundle_ids = c.get("/v1/bundleIds", **{"filter[identifier]": args.bundle_id})["data"]
+    bundle = next((b for b in bundle_ids if b["attributes"]["identifier"] == args.bundle_id), None)
+    if not bundle:
+        raise AscError(f"bundle id {args.bundle_id} is not registered; run `asc provision`")
+
+    profiles = c.get(
+        f"/v1/bundleIds/{bundle['id']}/profiles",
+        **{"limit": 50, "include": "certificates"},
+    )["data"]
+    usable = [
+        p
+        for p in profiles
+        if p["attributes"]["profileType"] == "IOS_APP_STORE"
+        and p["attributes"]["profileState"] == "ACTIVE"
+        and cert_ids & {x["id"] for x in p["relationships"]["certificates"].get("data", [])}
+    ]
+    if usable:
+        profile = usable[0]
+    else:
+        profile = c.post(
+            "/v1/profiles",
+            {
+                "data": {
+                    "type": "profiles",
+                    "attributes": {
+                        "name": f"{args.bundle_id} AppStore {time.strftime('%Y%m%d')}",
+                        "profileType": "IOS_APP_STORE",
+                    },
+                    "relationships": {
+                        "bundleId": {"data": {"type": "bundleIds", "id": bundle["id"]}},
+                        "certificates": {"data": [{"type": "certificates", "id": i} for i in sorted(cert_ids)]},
+                    },
+                }
+            },
+        )["data"]
+    with open(args.out, "wb") as f:
+        f.write(base64.b64decode(profile["attributes"]["profileContent"]))
+    attrs = profile["attributes"]
+    print(f"profile '{attrs['name']}' ({attrs['uuid']}) expires {attrs['expirationDate']} -> {args.out}")
+    return 0
+
+
 def op_json(*args, stdin=None):
     r = subprocess.run(["op", *args, "--format", "json"], input=stdin, capture_output=True, text=True)
     if r.returncode != 0:
@@ -214,9 +264,28 @@ def cmd_provision(c, args):
         )
         print(f"registered bundle id {args.bundle_id}")
 
-    # The private key never touches disk: it goes from memory into the .p12, and the
-    # .p12 goes to 1Password and GitHub over stdin.
+    # The private key never touches disk. It is stored in 1Password before Apple is
+    # asked for the certificate: a team has only a few distribution certificate
+    # slots, and a certificate whose key was lost can only be revoked.
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    password = secrets.token_urlsafe(24)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(password.encode()),
+    ).decode()
+    template = {
+        "title": DIST_CERT_ITEM,
+        "category": "LOGIN",
+        "fields": [
+            {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain",
+             "value": f"Apple Distribution, team {args.team_id}. Created by scripts/asc provision."},
+            {"type": "CONCEALED", "label": "private-key.pem", "value": key_pem},
+            {"type": "CONCEALED", "label": "export-password", "value": password},
+        ],
+    }  # fmt: skip
+    item = op_json("item", "create", "--vault", VAULT, "-", stdin=json.dumps(template))
+
     csr = (
         x509.CertificateSigningRequestBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "prateek/forks iOS")]))
@@ -235,27 +304,26 @@ def cmd_provision(c, args):
         },
     )["data"]
     cert = x509.load_der_x509_certificate(base64.b64decode(created["attributes"]["certificateContent"]))
-    password = secrets.token_urlsafe(24)
-    p12 = pkcs12.serialize_key_and_certificates(
-        b"Apple Distribution",
-        key,
-        cert,
-        None,
-        serialization.BestAvailableEncryption(password.encode()),
+    # macOS `security import` rejects the AES/PBES2 scheme that
+    # BestAvailableEncryption picks and reports it as a wrong password.
+    legacy = (
+        serialization.PrivateFormat.PKCS12.encryption_builder()
+        .kdf_rounds(50000)
+        .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC)
+        .hmac_hash(hashes.SHA1())
+        .build(password.encode())
     )
+    p12 = pkcs12.serialize_key_and_certificates(b"Apple Distribution", key, cert, None, legacy)
     p12_b64 = base64.b64encode(p12).decode()
 
-    template = {
-        "title": DIST_CERT_ITEM,
-        "category": "LOGIN",
-        "fields": [
-            {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain",
-             "value": f"Apple Distribution, team {args.team_id}. Created by scripts/asc provision."},
-            {"type": "CONCEALED", "label": "distribution-b64.p12", "value": p12_b64},
-            {"type": "CONCEALED", "label": "export-password", "value": password},
-        ],
-    }  # fmt: skip
-    item = op_json("item", "create", "--vault", VAULT, "-", stdin=json.dumps(template))
+    item["fields"].append({"type": "CONCEALED", "label": "distribution-b64.p12", "value": p12_b64})
+    try:
+        item = op_json("item", "edit", item["id"], "--vault", VAULT, stdin=json.dumps(item))
+    except AscError as e:
+        raise AscError(
+            f"certificate {created['id']} exists at Apple and its key is in 1Password item "
+            f"{item['id']} (private-key.pem), but adding the .p12 failed: {e}"
+        ) from e
     refs = {f["label"]: f"op://{VAULT}/{item['id']}/{f['id']}" for f in item["fields"]}
 
     for name, value in (("IOS_DIST_CERT_P12", p12_b64), ("IOS_DIST_CERT_PASSWORD", password)):
@@ -283,6 +351,10 @@ def main():
     wait.add_argument("--build", required=True)
     wait.add_argument("--timeout-minutes", type=int, default=40)
     wait.set_defaults(run=cmd_wait_build)
+    profile = sub.add_parser("profile")
+    profile.add_argument("--bundle-id", required=True)
+    profile.add_argument("--out", required=True)
+    profile.set_defaults(run=cmd_profile)
     provision = sub.add_parser("provision")
     provision.add_argument("--bundle-id", required=True)
     provision.add_argument("--name", required=True, help="display name for the bundle id record")

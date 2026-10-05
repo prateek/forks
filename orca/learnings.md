@@ -48,10 +48,14 @@ demands a newer mobile app; the fix there is a fresh fork build.
 - The build number is `run_number * 100 + run_attempt`, written into `app.json`
   before prebuild. Upstream asks App Store Connect for the next number; taking it
   from the run keeps every credential out of the build job. The marketing
-  version stays upstream's.
+  version stays upstream's. Renaming `orca.yml` restarts GitHub's run counter;
+  App Store Connect then rejects the lower build numbers for the same version
+  until upstream bumps it.
 - The archive is built with `CODE_SIGNING_ALLOWED=NO`. The sign job runs
   `xcodebuild -exportArchive` with manual signing on it, so upstream's Fastfile
-  and its hardcoded bundle id are never used.
+  and its hardcoded bundle id are never used. The provisioning profile comes
+  from a separate `profile` job (`scripts/asc profile`), which keeps fastlane
+  and third-party actions out of the job that holds the certificate.
 - The state artifact is about 1 GB because it carries the full upstream git
   history; publish needs that history to push `assembled`.
 

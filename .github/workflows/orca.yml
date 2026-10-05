@@ -4,13 +4,15 @@
 #   resolve  (hosted ubuntu, Claude token only) — assemble + conflict-resolve.
 #   build    (hosted macOS, ZERO secrets)       — runs upstream's JS + native build and
 #            archives the app UNSIGNED.
+#   profile  (hosted ubuntu, App Store Connect key) — fetch or create the App Store
+#            provisioning profile. A profile is not a secret.
 #   sign     (hosted macOS, Apple Distribution cert + App Store Connect key) — runs only
-#            Apple tools and fastlane sigh on the opaque archive: fetch the App Store
-#            profile, export a signed .ipa, upload it. No upstream code runs here.
+#            Apple tools on the opaque archive: export a signed .ipa and upload it. No
+#            upstream code and no third-party action runs here.
 #   verify   (hosted ubuntu, App Store Connect key) — wait until Apple has processed
 #            the build and it is in the internal TestFlight group.
-#   publish  (hosted ubuntu, GitHub App key)    — pushes assembled + cuts the release
-#            that records which commit became which TestFlight build.
+#   publish  (hosted ubuntu, GitHub App key)    — after verify, pushes assembled + cuts
+#            the release that records which commit became which TestFlight build.
 # Never pull_request-triggered (public repo; the jobs hold signing and push credentials).
 #
 # No schedule yet: the sign job cannot pass until the Apple-side setup in the infra
@@ -137,6 +139,7 @@ jobs:
           name: fork-orca-state
           path: ${{ runner.temp }}/state.tgz
           retention-days: 1
+          overwrite: true
 
   build:
     needs: resolve
@@ -227,15 +230,44 @@ jobs:
           name: fork-orca-archive-unsigned
           path: ${{ runner.temp }}/orca-archive.tar.gz
           retention-days: 1
+          overwrite: true
+
+  profile:
+    needs: resolve
+    if: needs.resolve.outputs.result == 'synced'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: fetch or create the App Store profile
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          scripts/asc profile --bundle-id "$IOS_BUNDLE_ID" --out "$RUNNER_TEMP/orca.mobileprovision" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fork-orca-profile
+          path: ${{ runner.temp }}/orca.mobileprovision
+          retention-days: 1
+          overwrite: true
 
   sign:
-    needs: [resolve, build]
+    needs: [resolve, build, profile]
     if: needs.resolve.outputs.result == 'synced'
     runs-on: macos-26
     timeout-minutes: 30
     # Holds the Apple Distribution cert and the App Store Connect key. It treats the
-    # archive as an opaque payload: only security, fastlane sigh, xcodebuild
-    # -exportArchive and altool run here, never the assembled tree.
+    # archive as an opaque payload: only security, xcodebuild -exportArchive and
+    # altool run here, never the assembled tree, and no action from outside actions/.
     permissions: {}
     steps:
       - name: fetch unsigned archive
@@ -243,9 +275,11 @@ jobs:
         with:
           name: fork-orca-archive-unsigned
           path: ${{ runner.temp }}
-      - uses: maxim-lobanov/setup-xcode@v1
+      - name: fetch provisioning profile
+        uses: actions/download-artifact@v4
         with:
-          xcode-version: '26.5'
+          name: fork-orca-profile
+          path: ${{ runner.temp }}
       - name: sign, export and upload to TestFlight
         env:
           CERT_P12: ${{ secrets.IOS_DIST_CERT_P12 }}
@@ -253,10 +287,10 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
-          FASTLANE_SKIP_UPDATE_CHECK: '1'
-          FASTLANE_HIDE_CHANGELOG: '1'
         run: |
           set -euo pipefail
+          # Same Xcode as the build job, selected without a third-party action.
+          sudo xcode-select -s /Applications/Xcode_26.5.app
           for v in CERT_P12 CERT_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_API_KEY_P8; do
             [ -n "${!v}" ] || { echo "secret for $v is not set on this repo; see the infra runbook" >&2; exit 1; }
           done
@@ -268,7 +302,7 @@ jobs:
           keydir="$HOME/.appstoreconnect/private_keys"
           cleanup() {
             security delete-keychain "$kc" 2>/dev/null || true
-            rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/asc-key.json" "$keydir/AuthKey_${ASC_KEY_ID}.p8"
+            rm -f "$RUNNER_TEMP/cert.p12" "$keydir/AuthKey_${ASC_KEY_ID}.p8"
           }
           trap cleanup EXIT
 
@@ -286,19 +320,15 @@ jobs:
           # altool reads the key from this directory by key id.
           mkdir -p "$keydir"
           (umask 077; printf '%s' "$ASC_API_KEY_P8" | base64 --decode > "$keydir/AuthKey_${ASC_KEY_ID}.p8")
-          (umask 077; KEY_PATH="$keydir/AuthKey_${ASC_KEY_ID}.p8" python3 -c '
-          import json, os
-          print(json.dumps({"key_id": os.environ["ASC_KEY_ID"], "issuer_id": os.environ["ASC_ISSUER_ID"],
-                            "key": open(os.environ["KEY_PATH"]).read(), "in_house": False}))' > asc-key.json)
 
-          # Fetch the App Store profile for this cert, creating it when missing or
-          # expired. Explicit profile + manual signing works with any team API key;
-          # Xcode cloud-managed signing needs an Admin key.
-          command -v fastlane >/dev/null 2>&1 || brew install fastlane
-          fastlane sigh --api-key-path asc-key.json --app-identifier "$IOS_BUNDLE_ID" \
-            --team-id "$APPLE_TEAM_ID" --output-path "$RUNNER_TEMP" --filename orca.mobileprovision
+          # Install the profile the way Xcode expects: named by its UUID.
           security cms -D -i orca.mobileprovision > profile.plist
           profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' profile.plist)"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' profile.plist)"
+          for dir in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles" "$HOME/Library/MobileDevice/Provisioning Profiles"; do
+            mkdir -p "$dir"
+            cp orca.mobileprovision "$dir/${profile_uuid}.mobileprovision"
+          done
 
           cat > export-options.plist <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -349,11 +379,14 @@ jobs:
           IOS_VERSION: ${{ needs.build.outputs.version }}
           IOS_BUILD: ${{ needs.build.outputs.build_number }}
         run: |
+          set -euo pipefail
           scripts/asc wait-build --bundle-id "$IOS_BUNDLE_ID" --version "$IOS_VERSION" \
             --build "$IOS_BUILD" --timeout-minutes 40 | tee -a "$GITHUB_STEP_SUMMARY"
 
   publish:
-    needs: [resolve, build, sign]
+    # After verify: a build Apple rejected must not be recorded as shipped, and the
+    # committed lock would make every later run a no_op.
+    needs: [resolve, build, sign, verify]
     if: needs.resolve.outputs.result == 'synced'
     runs-on: ubuntu-latest
     timeout-minutes: 15
