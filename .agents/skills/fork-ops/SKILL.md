@@ -120,7 +120,7 @@ the upstream PR, then track it in `fork.toml`.
 ## Status
 
 - Per-fork sync health: `gh run list --workflow <tool>.yml --limit 5`
-- Escalations: `gh issue list --author "app/github-actions"` (needs-human
+- Escalations: `gh issue list --author 'github-actions[bot]'` (needs-human
   and retire self-issues; filter by author because the repo is public)
 - What a fork carries: `[prs]`/`[branches]`/`[[patches.remote]]` in
   `<tool>/.fork/fork.toml` plus `<tool>/patches/`
