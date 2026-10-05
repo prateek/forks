@@ -14,6 +14,10 @@ lessons belong in the `fork-ops` skill's "Gotchas" instead.
 - The Release build is memory-heavy. It runs `nice`d and `-jobs`-bounded under a
   short timeout so it can't wedge a shared mini. An earlier `@testable` Debug
   build was heavier still and OOM'd the host.
+- `xcodebuild` refuses to run an untrusted SwiftPM build-tool plugin in a
+  non-interactive session ("Validate plug-in “CudaBuild” in package “mlx-swift”",
+  exit 65). A fresh hosted runner has no trust record, so the build passes
+  `-skipPackagePluginValidation` next to `-skipMacroValidation`.
 - Smoke is build-only (`test -d …/GhostPepper.app`), not the test suite: the
   suite needs network the secrets-free build job doesn't have.
 - The built `.app` lands under `build/derived/Build/Products/Release/`. The
